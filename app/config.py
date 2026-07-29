@@ -73,23 +73,30 @@ def _is_railway_environment():
 
 _DATABASE_ENV_NAMES = (
     "DB_NAME",
-    "DN_HOST",
+    "DB_HOST",
     "DB_PASSWORD",
     "DB_PORT",
     "DB_USER",
 )
 
 
+def _missing_database_env_vars():
+    """Return the required database variables that have no usable value."""
+    return tuple(
+        name for name in _DATABASE_ENV_NAMES if not _env_value(name)
+    )
+
+
 def _database_is_configured():
     """Return whether every required database variable has a usable value."""
-    return all(_env_value(name) for name in _DATABASE_ENV_NAMES)
+    return not _missing_database_env_vars()
 
 
 def _build_database_uri():
     """Build the MySQL URI using only the five supported DB variables."""
     db_user = _env_value("DB_USER", default="root")
     db_password = _env_value("DB_PASSWORD", default="root123")
-    db_host = _env_value("DN_HOST", default="localhost")
+    db_host = _env_value("DB_HOST", default="localhost")
     db_port = _env_value("DB_PORT", default="3306")
     db_name = _env_value("DB_NAME", default="teachalike_db")
 
@@ -101,10 +108,11 @@ def _build_database_uri():
 
 class Config:
     IS_RAILWAY = _is_railway_environment()
-    DATABASE_IS_CONFIGURED = _database_is_configured()
+    MISSING_DATABASE_ENV_VARS = _missing_database_env_vars()
+    DATABASE_IS_CONFIGURED = not MISSING_DATABASE_ENV_VARS
     DB_USER = _env_value("DB_USER", default="root")
     DB_PASSWORD = _env_value("DB_PASSWORD", default="root123")
-    DN_HOST = _env_value("DN_HOST", default="localhost")
+    DB_HOST = _env_value("DB_HOST", default="localhost")
     DB_NAME = _env_value("DB_NAME", default="teachalike_db")
     DB_PORT = _env_value("DB_PORT", default="3306")
 

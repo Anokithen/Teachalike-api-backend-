@@ -30,7 +30,7 @@ Set these variables on the backend service:
 
 ```env
 DB_NAME=${{MySQL.MYSQLDATABASE}}
-DN_HOST=${{MySQL.MYSQLHOST}}
+DB_HOST=${{MySQL.MYSQLHOST}}
 DB_PASSWORD=${{MySQL.MYSQLPASSWORD}}
 DB_PORT=${{MySQL.MYSQLPORT}}
 DB_USER=${{MySQL.MYSQLUSER}}
@@ -44,11 +44,11 @@ DB_QUERY_TIMEOUT_SECONDS=30
 
 Use Railway's variable-reference autocomplete because `MySQL` must match the
 database service's exact name. The application builds the PyMySQL connection
-using only `DB_NAME`, `DN_HOST`, `DB_PASSWORD`, `DB_PORT`, and `DB_USER`;
-`MYSQL_URL`, `DATABASE_URL`, `DB_HOST`, and Railway's `MYSQL*` variables are
-not read directly by the backend. It creates and verifies all model tables
-before serving traffic and fails deployment with the exact initialization
-stage if the database is not ready.
+using only `DB_NAME`, `DB_HOST`, `DB_PASSWORD`, `DB_PORT`, and `DB_USER`;
+`MYSQL_URL`, `DATABASE_URL`, and Railway's `MYSQL*` variables are not read
+directly by the backend. It creates and verifies all model tables before
+serving traffic and fails deployment with the exact initialization stage if
+the database is not ready.
 
 Generate a unique JWT secret, for example with `openssl rand -hex 32`. Never
 put database credentials, provider secrets, or JWT secrets in the frontend.

@@ -154,9 +154,13 @@ def _validate_deployment_config(app):
     if not app.config["IS_RAILWAY"]:
         return
     if not app.config["DATABASE_IS_CONFIGURED"]:
+        missing_variables = app.config.get(
+            "MISSING_DATABASE_ENV_VARS",
+            ("DB_NAME", "DB_HOST", "DB_PASSWORD", "DB_PORT", "DB_USER"),
+        )
         raise RuntimeError(
-            "Database configuration is missing. Set DB_NAME, DN_HOST, "
-            "DB_PASSWORD, DB_PORT, and DB_USER on the API service."
+            "Database configuration is missing required variable(s): "
+            f"{', '.join(missing_variables)}."
         )
     if app.config["JWT_SECRET_KEY_IS_EPHEMERAL"]:
         raise RuntimeError("JWT_SECRET_KEY must be set to a stable secret.")

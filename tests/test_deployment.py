@@ -14,6 +14,7 @@ from app.config import (
     _build_database_uri,
     _database_is_configured,
     _is_railway_environment,
+    _missing_database_env_vars,
 )
 from app.extensions import db
 
@@ -32,7 +33,7 @@ class DatabaseConfigTests(unittest.TestCase):
             os.environ,
             {
                 "DB_NAME": "railway",
-                "DN_HOST": "mysql.railway.internal",
+                "DB_HOST": "mysql.railway.internal",
                 "DB_PASSWORD": "secret",
                 "DB_PORT": "3306",
                 "DB_USER": "user",
@@ -51,7 +52,7 @@ class DatabaseConfigTests(unittest.TestCase):
             os.environ,
             {
                 "DB_NAME": "teach alike",
-                "DN_HOST": "database.example",
+                "DB_HOST": "database.example",
                 "DB_PASSWORD": "p@ss/word",
                 "DB_PORT": "3306",
                 "DB_USER": "root user",
@@ -73,9 +74,8 @@ class DatabaseConfigTests(unittest.TestCase):
                 "MYSQL_URL": "mysql://wrong:wrong@wrong:9999/wrong",
                 "DATABASE_URL": "mysql://wrong:wrong@wrong:9999/wrong",
                 "MYSQLHOST": "wrong",
-                "DB_HOST": "wrong",
                 "DB_NAME": "railway",
-                "DN_HOST": "database.example",
+                "DB_HOST": "database.example",
                 "DB_PASSWORD": "secret",
                 "DB_PORT": "3306",
                 "DB_USER": "root",
@@ -92,7 +92,7 @@ class DatabaseConfigTests(unittest.TestCase):
     def test_all_five_database_variables_are_required_for_deployment(self):
         complete_environment = {
             "DB_NAME": "railway",
-            "DN_HOST": "database.example",
+            "DB_HOST": "database.example",
             "DB_PASSWORD": "secret",
             "DB_PORT": "3306",
             "DB_USER": "root",
@@ -106,6 +106,10 @@ class DatabaseConfigTests(unittest.TestCase):
             with self.subTest(missing_name=missing_name):
                 with patch.dict(os.environ, incomplete_environment, clear=True):
                     self.assertFalse(_database_is_configured())
+                    self.assertEqual(
+                        _missing_database_env_vars(),
+                        (missing_name,),
+                    )
 
 
 class DeploymentValidationTests(unittest.TestCase):
@@ -135,6 +139,14 @@ class DeploymentValidationTests(unittest.TestCase):
         app.config["FRONTEND_ORIGINS"] = ["*"]
 
         with self.assertRaisesRegex(RuntimeError, "FRONTEND_ORIGINS"):
+            _validate_deployment_config(app)
+
+    def test_missing_database_variable_is_named(self):
+        app = self._app_with_valid_config()
+        app.config["DATABASE_IS_CONFIGURED"] = False
+        app.config["MISSING_DATABASE_ENV_VARS"] = ("DB_HOST",)
+
+        with self.assertRaisesRegex(RuntimeError, "DB_HOST"):
             _validate_deployment_config(app)
 
 
