@@ -288,3 +288,152 @@ def replace_asset(file, asset_folder, resource_type, public_id, **kwargs):
         overwrite=True,
         **kwargs,
     )
+
+
+def delete_asset(
+    public_id,
+    resource_type,
+    delivery_type="upload",
+    config=None,
+):
+    """Delete an asset; missing Cloudinary resources are safely idempotent."""
+    if not public_id:
+        return {"result": "not found", "public_id": public_id}
+    try:
+        cloudinary = configure_cloudinary(_operation_config(config))
+        result = cloudinary.uploader.destroy(
+            public_id,
+            resource_type=resource_type,
+            type=delivery_type,
+            invalidate=True,
+        )
+    except Exception as exc:
+        if isinstance(exc, CloudinaryServiceError):
+            raise
+        _log_storage_failure("deletion", public_id)
+        raise CloudinaryServiceError("Cloudinary deletion failed.") from exc
+    status = result.get("result") if isinstance(result, dict) else result
+    return {"result": status or "unknown", "public_id": public_id}
+
+
+def get_asset_metadata(
+    public_id,
+    resource_type="image",
+    delivery_type="upload",
+    config=None,
+):
+    """Read normalized metadata for an exact server-owned Cloudinary public ID."""
+    try:
+        cloudinary = configure_cloudinary(_operation_config(config))
+        result = cloudinary.api.resource(
+            public_id,
+            resource_type=resource_type,
+            type=delivery_type,
+        )
+    except Exception as exc:
+        if isinstance(exc, CloudinaryServiceError):
+            raise
+        _log_storage_failure("metadata lookup", public_id)
+        raise CloudinaryServiceError("Cloudinary metadata lookup failed.") from exc
+    return {
+        "asset_id": result.get("asset_id") or result.get("public_id"),
+        "public_id": result.get("public_id"),
+        "secure_url": result.get("secure_url"),
+        "resource_type": result.get("resource_type") or resource_type,
+        "delivery_type": result.get("type") or delivery_type,
+        "format": result.get("format"),
+        "bytes": result.get("bytes"),
+        "width": result.get("width"),
+        "height": result.get("height"),
+        "duration": result.get("duration"),
+        "asset_folder": result.get("asset_folder"),
+        "original_filename": result.get("original_filename"),
+    }
+
+
+def upload_voice_sample(
+    file,
+    owner_id,
+    config,
+    owner_name=None,
+    voice_profile_id=None,
+):
+    """Compatibility wrapper over :func:`upload_asset` for private voice audio."""
+    del owner_name
+    if voice_profile_id is None:
+        raise CloudinaryServiceError(
+            "voice_profile_id is required for canonical voice-profile storage."
+        )
+    extension = validate_uploaded_file(file, "audio")
+    folder = get_voice_profile_folder(owner_id)
+    metadata = upload_asset(
+        file,
+        folder,
+        resource_type="video",
+        delivery_type="authenticated",
+        public_id=f"{folder}/voice_profile_{int(voice_profile_id)}",
+        overwrite=False,
+        format=extension,
+        config=config,
+    )
+    return metadata["secure_url"], metadata["public_id"]
+
+
+def upload_book_narration(
+    file,
+    owner_id,
+    owner_name,
+    book_id,
+    book_title,
+    voice_profile_id,
+    config,
+    generation_id=None,
+    return_metadata=False,
+):
+    """Compatibility wrapper for canonical private narration uploads."""
+    if generation_id is None:
+        raise CloudinaryServiceError(
+            "generation_id is required for canonical narration storage."
+        )
+    folder = get_generated_book_audio_folder(owner_id, book_id, book_title)
+    public_id = book_narration_public_id(
+        owner_id,
+        owner_name,
+        book_id,
+        book_title,
+        voice_profile_id,
+        generation_id,
+    )
+    metadata = upload_asset(
+        file,
+        folder,
+        resource_type="video",
+        delivery_type="authenticated",
+        public_id=public_id,
+        overwrite=False,
+        format="mp3",
+        config=config,
+    )
+    if return_metadata:
+        return metadata
+    return metadata["secure_url"], metadata["public_id"]
+
+
+def signed_narration_delivery_url(public_id, fallback_url, config):
+    """Narrations use the same authenticated delivery policy as voice samples."""
+    return signed_voice_delivery_url(public_id, fallback_url, config)
+
+
+def delete_authenticated_audio(public_id, config):
+    """Compatibility wrapper for exact authenticated-audio deletion."""
+    return delete_asset(
+        public_id,
+        resource_type="video",
+        delivery_type="authenticated",
+        config=config,
+    )
+
+
+def delete_voice_sample(public_id, config):
+    """Delete a private voice sample stored as an authenticated video asset."""
+    return delete_authenticated_audio(public_id, config)
