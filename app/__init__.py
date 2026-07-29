@@ -171,25 +171,40 @@ def _prepare_database(app):
     retry_seconds = app.config["DATABASE_STARTUP_RETRY_SECONDS"]
 
     for attempt in range(1, attempts + 1):
+        stage = "database connectivity and schema verification"
         try:
             if app.config["AUTO_CREATE_TABLES"]:
+                stage = "model table creation"
                 db.create_all()
+                stage = "voice profile schema compatibility"
                 _ensure_voice_profile_schema()
+                stage = "profile image schema compatibility"
                 _ensure_profile_image_schema()
+                stage = "book schema compatibility"
                 _ensure_book_schema()
+                stage = "book narration schema compatibility"
                 _ensure_book_narration_schema()
+            stage = "database connectivity and schema verification"
             _verify_database_ready()
+            app.logger.info(
+                "Database initialization succeeded on attempt %s/%s.",
+                attempt,
+                attempts,
+            )
             return
         except Exception as exc:
             db.session.rollback()
             if attempt == attempts:
                 raise RuntimeError(
-                    f"Database initialization failed after {attempts} attempt(s)."
+                    "Database initialization failed during "
+                    f"{stage} after {attempts} attempt(s)."
                 ) from exc
             app.logger.warning(
-                "Database initialization attempt %s/%s failed; retrying in %ss: %s",
+                "Database initialization attempt %s/%s failed during %s; "
+                "retrying in %ss: %s",
                 attempt,
                 attempts,
+                stage,
                 retry_seconds,
                 exc,
             )

@@ -34,6 +34,10 @@ tables, and applies the narrow compatibility updates represented by the model
 schema. The SQL files in `migrations/` remain available for review or manual
 database administration. If exit protection was deployed previously,
 `20260728_remove_exit_password.sql` removes its retired credential column.
+Database operations during startup are bounded by
+`DATABASE_QUERY_TIMEOUT_SECONDS` (30 seconds by default), keeping all retries
+inside Railway's deployment health-check window and identifying the failing
+schema stage in the deployment logs.
 
 For a Vercel frontend, set `FRONTEND_ORIGINS` on the Railway API service to the
 exact deployed frontend origin, for example

@@ -37,6 +37,41 @@ class RailwayConfigTests(unittest.TestCase):
             "mysql+pymysql://private-user:secret@mysql.railway.internal:3306/app",
         )
 
+    def test_mysql_url_is_converted_to_the_pymysql_driver(self):
+        with patch.dict(
+            os.environ,
+            {
+                "MYSQL_URL": "mysql://railway-user:secret@mysql.railway.internal:3306/railway",
+            },
+            clear=True,
+        ):
+            uri = _build_database_uri()
+
+        self.assertEqual(
+            uri,
+            "mysql+pymysql://railway-user:secret@mysql.railway.internal:3306/railway",
+        )
+
+    def test_individual_railway_mysql_variables_are_supported(self):
+        with patch.dict(
+            os.environ,
+            {
+                "MYSQLUSER": "railway-user",
+                "MYSQLPASSWORD": "p@ss/word",
+                "MYSQLHOST": "mysql.railway.internal",
+                "MYSQLPORT": "3306",
+                "MYSQLDATABASE": "railway",
+            },
+            clear=True,
+        ):
+            uri = _build_database_uri()
+
+        self.assertEqual(
+            uri,
+            "mysql+pymysql://railway-user:p%40ss%2Fword"
+            "@mysql.railway.internal:3306/railway",
+        )
+
 
 class ReadinessTests(unittest.TestCase):
     def setUp(self):
