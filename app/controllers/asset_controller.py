@@ -331,3 +331,209 @@ def upload_voice_profile():
     from app.controllers.voice_profile_controller import create_voice_profile
 
     return create_voice_profile(asset_response=True)
+
+
+def upload_book_narration(book_id):
+    """Store a completed narration upload as a distinct generation."""
+    book = db.session.get(Book, book_id)
+    if book is None:
+        return _error("Book not found.", 404)
+    profile_id = request.form.get("voice_profile_id", type=int)
+    profile = db.session.get(VoiceProfile, profile_id) if profile_id else None
+    if profile is None:
+        return _error("Voice profile not found.", 404)
+    if not current_user.is_admin and profile.parent_id != current_user.id:
+        return _error("You cannot use this voice profile.", 403)
+    if profile.status != STATUS_READY:
+        return _error("The selected voice profile is not ready.", 422)
+    upload, error = _validated_file(GENERATED_BOOK_AUDIO, "audio")
+    if error:
+        return error
+    narration = BookNarration(
+        book_id=book.id, voice_profile_id=profile.id, status=STATUS_READY
+    )
+    metadata = None
+    try:
+        db.session.add(narration)
+        db.session.flush()
+        metadata = upload_asset(
+            upload,
+            get_generated_book_audio_folder(profile.parent_id, book.id, book.title),
+            resource_type="video",
+            public_id=(
+                f"{get_generated_book_audio_folder(profile.parent_id, book.id, book.title)}"
+                f"/voice_{profile.id}_{book.id}_{narration.id}"
+            ),
+            overwrite=False,
+            delivery_type="authenticated",
+        )
+        narration.narration_audio_url = metadata["secure_url"]
+        narration.cloudinary_public_id = metadata["public_id"]
+        asset = _new_asset(
+            metadata,
+            GENERATED_BOOK_AUDIO,
+            profile.parent_id,
+            book_id=book.id,
+            voice_profile_id=profile.id,
+            generation_id=narration.id,
+        )
+        db.session.add(asset)
+        db.session.commit()
+        return _response("Book narration uploaded.", asset.to_dict(), 201)
+    except CloudinaryServiceError:
+        db.session.rollback()
+        return _error("Book narration upload failed.", 503)
+    except SQLAlchemyError:
+        db.session.rollback()
+        if metadata:
+            _cleanup_upload(metadata)
+        return _error("Narration metadata could not be saved.", 500)
+
+
+def upload_book_video(book_id):
+    """Store an administrator-owned video for an existing book."""
+    book = db.session.get(Book, book_id)
+    if book is None:
+        return _error("Book not found.", 404)
+    upload, error = _validated_file(BOOK_VIDEO, "video")
+    if error:
+        return error
+    metadata = None
+    try:
+        filename = sanitize_folder_segment(Path(upload.filename).stem)
+        metadata = upload_asset(
+            upload,
+            get_book_video_folder(current_user.id, current_user.id, book.id, book.title),
+            resource_type="video",
+            public_id=f"{filename}_{uuid4().hex}",
+            overwrite=False,
+        )
+        asset = _new_asset(
+            metadata,
+            BOOK_VIDEO,
+            current_user.id,
+            admin_id=current_user.id,
+            book_id=book.id,
+        )
+        db.session.add(asset)
+        book.video_url = metadata["secure_url"]
+        db.session.commit()
+        return _response("Book video uploaded.", asset.to_dict(), 201)
+    except CloudinaryServiceError:
+        return _error("Book video upload failed.", 503)
+    except SQLAlchemyError:
+        db.session.rollback()
+        if metadata:
+            _cleanup_upload(metadata)
+        return _error("Book video metadata could not be saved.", 500)
+
+
+def _can_manage_asset(asset):
+    if not asset:
+        return False
+    if current_user.is_admin or asset.owner_user_id == current_user.id:
+        return True
+    if asset.asset_category == CHILD_PROFILE_IMAGE and asset.child_id:
+        return can_access_child(db.session.get(Child, asset.child_id))
+    return False
+
+
+def get_asset(asset_id):
+    asset = db.session.get(Asset, asset_id)
+    if not _can_manage_asset(asset) or asset.deleted_at is not None:
+        return _error("Asset not found.", 404)
+    return _response("Asset retrieved.", asset.to_dict())
+
+
+def list_my_assets():
+    assets = Asset.query.filter_by(
+        owner_user_id=current_user.id, deleted_at=None
+    ).order_by(Asset.id.desc()).all()
+    return _response("Assets retrieved.", [asset.to_dict() for asset in assets])
+
+
+def list_book_assets(book_id):
+    if db.session.get(Book, book_id) is None:
+        return _error("Book not found.", 404)
+    query = Asset.query.filter_by(book_id=book_id, deleted_at=None)
+    if not current_user.is_admin:
+        query = query.filter_by(owner_user_id=current_user.id)
+    return _response(
+        "Book assets retrieved.",
+        [asset.to_dict() for asset in query.order_by(Asset.id.desc()).all()],
+    )
+
+
+def delete_stored_asset(asset_id):
+    asset = db.session.get(Asset, asset_id)
+    if not _can_manage_asset(asset):
+        return _error("Asset not found.", 404)
+    if (
+        asset.deleted_at is not None
+        and asset.status != STATUS_CLEANUP_FAILED
+    ):
+        return _response("Asset was already deleted.", asset.to_dict())
+
+    profile = None
+    if asset.asset_category == VOICE_PROFILE and asset.voice_profile_id:
+        profile = db.session.get(VoiceProfile, asset.voice_profile_id)
+        if profile and profile.narrations:
+            return _error("This voice profile is still used by narrations.", 422)
+        if profile and profile.reading_sessions:
+            return _error("This voice profile is still used by reading sessions.", 422)
+    try:
+        delete_asset(
+            asset.cloudinary_public_id,
+            asset.cloudinary_resource_type,
+            asset.cloudinary_delivery_type,
+        )
+        asset.status = STATUS_DELETED
+        asset.deleted_at = utc_now()
+        asset.active_slot = None
+
+        if asset.asset_category == USER_PROFILE_IMAGE:
+            owner = db.session.get(Parent, asset.owner_user_id)
+            if owner and owner.profile_image_public_id == asset.cloudinary_public_id:
+                owner.profile_image_url = None
+                owner.profile_image_public_id = None
+        elif asset.asset_category == CHILD_PROFILE_IMAGE and asset.child_id:
+            child = db.session.get(Child, asset.child_id)
+            if child and child.profile_image_public_id == asset.cloudinary_public_id:
+                child.profile_image_url = None
+                child.profile_image_public_id = None
+        elif asset.asset_category == VOICE_PROFILE and profile:
+            delete_voice(profile.elevenlabs_voice_id, current_app.config)
+            db.session.delete(profile)
+        elif asset.asset_category == GENERATED_BOOK_AUDIO and asset.generation_id:
+            generation = db.session.get(BookNarration, asset.generation_id)
+            if generation:
+                db.session.delete(generation)
+        elif asset.asset_category == BOOK_VIDEO and asset.book_id:
+            book = db.session.get(Book, asset.book_id)
+            if book and book.video_url == asset.cloudinary_secure_url:
+                replacement = (
+                    Asset.query.filter(
+                        Asset.book_id == book.id,
+                        Asset.asset_category == BOOK_VIDEO,
+                        Asset.deleted_at.is_(None),
+                        Asset.id != asset.id,
+                    )
+                    .order_by(Asset.id.desc())
+                    .first()
+                )
+                book.video_url = (
+                    replacement.cloudinary_secure_url if replacement else None
+                )
+        db.session.commit()
+        return _response("Asset deleted.", asset.to_dict())
+    except CloudinaryServiceError:
+        return _error("Asset deletion could not be confirmed.", 503)
+    except SQLAlchemyError:
+        db.session.rollback()
+        return _error("Asset deletion metadata could not be saved.", 500)
+    except Exception:
+        # This includes cleanup of a linked external voice clone. The
+        # Cloudinary delete is idempotent, so a retry can safely finish the
+        # remaining database work without exposing upstream details.
+        db.session.rollback()
+        return _error("Asset deletion could not be completed.", 503)
