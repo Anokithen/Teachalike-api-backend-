@@ -194,3 +194,85 @@ def _prepare_database(app):
                 exc,
             )
             time.sleep(retry_seconds)
+
+
+def _verify_database_ready():
+    """Verify both database connectivity and the complete model table set."""
+    db.session.execute(text("SELECT 1"))
+    existing_tables = set(inspect(db.engine).get_table_names())
+    expected_tables = set(db.metadata.tables)
+    missing_tables = sorted(expected_tables - existing_tables)
+    if missing_tables:
+        raise RuntimeError(
+            "Database schema is missing required tables: "
+            + ", ".join(missing_tables)
+        )
+
+
+def _ensure_voice_profile_schema():
+    """Add the ElevenLabs ID to databases created before voice cloning support."""
+    inspector = inspect(db.engine)
+    if not inspector.has_table("voice_profiles"):
+        return
+    columns = {column["name"] for column in inspector.get_columns("voice_profiles")}
+    if "elevenlabs_voice_id" in columns:
+        return
+    db.session.execute(
+        text("ALTER TABLE voice_profiles ADD COLUMN elevenlabs_voice_id VARCHAR(255) NULL")
+    )
+    db.session.execute(
+        text(
+            "CREATE UNIQUE INDEX uq_voice_profiles_elevenlabs_voice_id "
+            "ON voice_profiles (elevenlabs_voice_id)"
+        )
+    )
+    db.session.commit()
+
+
+def _ensure_book_schema():
+    """Add book illustration URLs to databases created before book galleries."""
+    inspector = inspect(db.engine)
+    if not inspector.has_table("books"):
+        return
+    columns = {column["name"] for column in inspector.get_columns("books")}
+    if "image_urls" in columns:
+        return
+    db.session.execute(text("ALTER TABLE books ADD COLUMN image_urls JSON NULL"))
+    db.session.commit()
+
+
+def _ensure_book_narration_schema():
+    """Remove the retired one-narration-per-book/voice constraint."""
+    inspector = inspect(db.engine)
+    if not inspector.has_table("book_narrations"):
+        return
+    unique_constraints = {
+        constraint["name"]
+        for constraint in inspector.get_unique_constraints("book_narrations")
+        if constraint.get("name")
+    }
+    if "uq_book_voice_narration" not in unique_constraints:
+        return
+    if db.engine.dialect.name != "mysql":
+        raise RuntimeError(
+            "The legacy uq_book_voice_narration constraint must be removed "
+            "before startup."
+        )
+    db.session.execute(
+        text("ALTER TABLE book_narrations DROP INDEX uq_book_voice_narration")
+    )
+    db.session.commit()
+
+
+def _ensure_profile_image_schema():
+    """Add optional profile image fields to existing account and child tables."""
+    for table in ("parents", "children"):
+        inspector = inspect(db.engine)
+        if not inspector.has_table(table):
+            continue
+        columns = {column["name"] for column in inspector.get_columns(table)}
+        if "profile_image_url" not in columns:
+            db.session.execute(text(f"ALTER TABLE {table} ADD COLUMN profile_image_url VARCHAR(500) NULL"))
+        if "profile_image_public_id" not in columns:
+            db.session.execute(text(f"ALTER TABLE {table} ADD COLUMN profile_image_public_id VARCHAR(255) NULL"))
+    db.session.commit()
