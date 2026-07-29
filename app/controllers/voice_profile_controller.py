@@ -156,3 +156,88 @@ def list_voice_profiles():
         query = query.filter_by(parent_id=current_user.id)
     profiles = query.order_by(VoiceProfile.id.desc()).all()
     return jsonify({"voice_profiles": [p.to_dict() for p in profiles]}), 200
+
+
+def get_voice_profile_status(voice_profile_id):
+    profile = db.session.get(VoiceProfile, voice_profile_id)
+    if not can_access_voice_profile(profile):
+        return jsonify({"error": "Voice profile not found."}), 404
+
+    return jsonify({"id": profile.id, "status": profile.status}), 200
+
+
+def get_voice_profile_audio(voice_profile_id):
+    profile = db.session.get(VoiceProfile, voice_profile_id)
+    if not can_access_voice_profile(profile):
+        return jsonify({"error": "Voice profile not found."}), 404
+    # Proxy the signed resource after our ownership check. Returning a
+    # cross-origin redirect here makes browser XHR clients report a generic
+    # network error when Cloudinary does not add CORS headers to private audio.
+    try:
+        return stream_authenticated_audio(
+            profile.cloudinary_public_id,
+            profile.voice_sample_url,
+            current_app.config,
+            request.headers.get("Range"),
+        )
+    except CloudinaryServiceError:
+        return jsonify({
+            "error": "Voice recording playback is temporarily unavailable."
+        }), 503
+
+
+def update_voice_profile(voice_profile_id):
+    profile = db.session.get(VoiceProfile, voice_profile_id)
+    if not can_access_voice_profile(profile):
+        return jsonify({"error": "Voice profile not found."}), 404
+    data = request.get_json(silent=True) or {}
+    if "label" not in data:
+        return jsonify({"errors": ["label is required."]}), 400
+    label = str(data["label"]).strip()
+    if len(label) > 80:
+        return jsonify({"errors": ["label must be 80 characters or fewer."]}), 400
+    try:
+        profile.label = label or None
+        db.session.commit()
+        return jsonify({"message": "Voice profile updated.", "voice_profile": profile.to_dict()}), 200
+    except Exception:
+        db.session.rollback()
+        return jsonify({"error": "An internal server error occurred."}), 500
+
+
+def delete_voice_profile(voice_profile_id):
+    profile = db.session.get(VoiceProfile, voice_profile_id)
+    if not owns_voice_profile(profile):
+        return jsonify({"error": "Voice profile not found."}), 404
+    if profile.narrations:
+        return jsonify({"error": "This voice profile is still used by narrations."}), 422
+    if profile.reading_sessions:
+        return jsonify({"error": "This voice profile is still used by reading sessions."}), 422
+
+    asset = Asset.query.filter_by(
+        voice_profile_id=profile.id,
+        asset_category=VOICE_PROFILE,
+        deleted_at=None,
+    ).order_by(Asset.id.desc()).first()
+    if asset:
+        from app.controllers.asset_controller import delete_stored_asset
+
+        response, status = delete_stored_asset(asset.id)
+        if status >= 400:
+            payload = response.get_json(silent=True) or {}
+            return jsonify({
+                "error": payload.get("message") or "Voice profile deletion failed."
+            }), status
+        return jsonify({
+            "message": "Voice profile and recording deleted successfully."
+        }), 200
+
+    try:
+        delete_voice(profile.elevenlabs_voice_id, current_app.config)
+        delete_voice_sample(profile.cloudinary_public_id, current_app.config)
+        db.session.delete(profile)
+        db.session.commit()
+        return jsonify({"message": "Voice profile and recording deleted successfully."}), 200
+    except Exception:
+        db.session.rollback()
+        return jsonify({"error": "An internal server error occurred."}), 500
