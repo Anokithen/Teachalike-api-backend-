@@ -153,3 +153,93 @@ def get_child(child_id):
     data = child.to_dict()
     data["stats"] = stats
     return jsonify({"child": data}), 200
+
+
+def update_child(child_id):
+    child = db.session.get(Child, child_id)
+    if not can_access_child(child):
+        return jsonify({"error": "Child not found."}), 404
+
+    data = request.get_json(silent=True)
+    errors = _validate_child_payload(data, partial=True)
+    if errors:
+        return jsonify({"errors": errors}), 400
+
+    try:
+        if "name" in data:
+            child.name = str(data.get("name")).strip()
+        if "age" in data:
+            child.age = int(data.get("age"))
+        if "reading_level" in data:
+            child.reading_level = str(data.get("reading_level")).strip().lower()
+        if "gender" in data:
+            child.gender = data["gender"]
+        if data.get("child_pin"):
+            child.set_pin(str(data["child_pin"]))
+
+        db.session.commit()
+        return jsonify({"message": "Child profile updated successfully.", "child": child.to_dict()}), 200
+    except Exception:
+        db.session.rollback()
+        return jsonify({"error": "An internal server error occurred."}), 500
+
+
+def upload_profile_image_for_child(child_id):
+    from app.controllers.asset_controller import upload_child_profile_image
+
+    return upload_child_profile_image(child_id, legacy_response=True)
+
+
+def delete_profile_image_for_child(child_id):
+    from app.controllers.asset_controller import delete_child_profile_image_legacy
+
+    return delete_child_profile_image_legacy(child_id)
+
+
+def verify_child_pin(child_id):
+    child = db.session.get(Child, child_id)
+    if not can_access_child(child):
+        return jsonify({"error": "Child not found."}), 404
+
+    data = request.get_json(silent=True) or {}
+    pin = str(data.get("pin", ""))
+    if len(pin) != 6 or not pin.isdigit():
+        return jsonify({"errors": ["pin must contain exactly six digits."]}), 400
+    if not child.child_pin_hash:
+        return jsonify({"error": "This child does not have a profile PIN."}), 400
+    limit_key = f"pin:{current_user.id}:{child.id}"
+    limit = current_app.config["PIN_RATE_LIMIT_ATTEMPTS"]
+    window = current_app.config["PIN_RATE_LIMIT_WINDOW_SECONDS"]
+    blocked, retry_after = pin_attempts.blocked(limit_key, limit, window)
+    if blocked:
+        response = jsonify(
+            {"error": "Too many incorrect PIN attempts. Please try again later."}
+        )
+        response.status_code = 429
+        response.headers["Retry-After"] = str(retry_after)
+        return response
+    if not child.check_pin(pin):
+        pin_attempts.record_failure(limit_key, window)
+        return jsonify({"error": "The profile PIN is incorrect."}), 401
+    pin_attempts.reset(limit_key)
+    return jsonify({"message": "Profile PIN verified."}), 200
+
+
+def delete_child(child_id):
+    child = db.session.get(Child, child_id)
+    if not can_access_child(child):
+        return jsonify({"error": "Child not found."}), 404
+
+    try:
+        if child.profile_image_public_id:
+            from app.controllers.asset_controller import delete_child_profile_image_legacy
+
+            cleanup_response, cleanup_status = delete_child_profile_image_legacy(child.id)
+            if cleanup_status >= 400:
+                return cleanup_response, cleanup_status
+        db.session.delete(child)
+        db.session.commit()
+        return jsonify({"message": "Child profile removed successfully."}), 200
+    except Exception:
+        db.session.rollback()
+        return jsonify({"error": "An internal server error occurred."}), 500
