@@ -188,3 +188,86 @@ def update_book(book_id):
     except Exception:
         db.session.rollback()
         return jsonify({"error": "An internal server error occurred."}), 500
+
+
+def delete_book(book_id):
+    """DELETE /api/admin/books/<id> — remove a book without orphaning sessions."""
+    book = db.session.get(Book, book_id)
+    if not book:
+        return jsonify({"error": "Book not found."}), 404
+    if ReadingSession.query.filter_by(book_id=book_id).first():
+        return jsonify({"error": "This book cannot be deleted because it has reading sessions."}), 409
+
+    try:
+        db.session.delete(book)
+        db.session.commit()
+        return jsonify({"message": "Book deleted successfully."}), 200
+    except Exception:
+        db.session.rollback()
+        return jsonify({"error": "An internal server error occurred."}), 500
+
+
+def generate_book_draft_for_admin():
+    """POST /api/admin/book-draft — create an AI draft server-side."""
+    data = request.get_json(silent=True) or {}
+    age_group = str(data.get("age_group", "")).strip()
+    reading_level = str(data.get("reading_level", "")).strip().lower()
+    idea = str(data.get("idea", "")).strip()
+    model = str(data.get("model") or "").strip()
+    errors = []
+    if not age_group:
+        errors.append("age_group is required.")
+    if reading_level not in {"beginner", "intermediate", "advanced"}:
+        errors.append("reading_level must be beginner, intermediate, or advanced.")
+    if not idea:
+        errors.append("idea is required.")
+    if len(model) > 200:
+        errors.append("model must be 200 characters or fewer.")
+    if errors:
+        return jsonify({"errors": errors}), 400
+    try:
+        provider = str(current_app.config.get("BOOK_GENERATION_PROVIDER", "nvidia")).lower()
+        if provider == "groq":
+            draft = generate_groq_book_draft(
+                age_group, reading_level, idea, current_app.config, model=model or None
+            )
+        elif provider == "nvidia":
+            draft = generate_nvidia_book_draft(age_group, reading_level, idea, current_app.config)
+        elif provider == "gemini":
+            draft = generate_gemini_book_draft(age_group, reading_level, idea, current_app.config)
+        else:
+            return jsonify({"error": "BOOK_GENERATION_PROVIDER must be groq, nvidia, or gemini."}), 500
+        return jsonify({"draft": draft, "provider": provider}), 200
+    except (GeminiError, GroqError, NvidiaError) as exc:
+        return jsonify({"error": str(exc)}), 503
+    except Exception:
+        return jsonify({"error": "Book draft generation failed."}), 500
+
+
+def upload_media():
+    """Upload a public book cover or video for use in the catalog."""
+    file = request.files.get("file")
+    media_type = request.form.get("media_type")
+    if not file or not file.filename:
+        return jsonify({"errors": ["file is required."]}), 400
+    if media_type not in {"image", "video"}:
+        return jsonify({"errors": ["media_type must be image or video."]}), 400
+    # Videos must be attached to a specific catalog book so their ownership
+    # and replacement lifecycle can be tracked by the asset endpoints.
+    if media_type == "video":
+        return jsonify({"errors": ["Use the book-specific video upload endpoint."]}), 422
+    try:
+        validate_upload_size(
+            file,
+            current_app.config["MAX_PROFILE_IMAGE_SIZE_MB"],
+        )
+        url = upload_book_media(file, media_type, current_user.id, current_app.config)
+        return jsonify({"url": url}), 201
+    except ValueError as exc:
+        message = str(exc)
+        status = 413 if "exceeds" in message else 415
+        return jsonify({"errors": [message]}), status
+    except CloudinaryServiceError:
+        return jsonify({"error": "Media upload failed."}), 503
+    except Exception:
+        return jsonify({"error": "Media upload failed."}), 500
