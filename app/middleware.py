@@ -57,3 +57,62 @@ def parent_or_teacher_required(fn):
 def get_current_parent():
     """Returns the account tied to the current JWT, or None."""
     return current_user
+
+
+def child_belongs_to_current_parent(child):
+    """Return whether the current account may use a child's activity APIs.
+
+    Despite the historical name, teachers are also allowed to work with the
+    children they created on behalf of a parent, and admins may inspect all
+    children. Keep this in one helper so nested activity endpoints follow the
+    same access policy as the child profile endpoints.
+    """
+    return can_access_child(child)
+
+
+def can_access_child(child):
+    """True if the current account may view/manage this child: either the
+    owning parent, or an admin (who can see everyone's data)."""
+    if child is None or current_user is None:
+        return False
+    if current_user.is_admin:
+        return True
+    return child.parent_id == current_user.id or (
+        current_user.is_teacher and child.created_by_id == current_user.id
+    )
+
+
+def voice_profile_belongs_to_current_parent(voice_profile):
+    return (
+        voice_profile is not None
+        and current_user is not None
+        and voice_profile.parent_id == current_user.id
+    )
+
+
+def can_access_voice_profile(voice_profile):
+    return (
+        voice_profile is not None
+        and current_user is not None
+        and (current_user.is_admin or voice_profile.parent_id == current_user.id)
+    )
+
+
+def owns_voice_profile(voice_profile):
+    """Only the parent/teacher who uploaded a voice profile may delete it."""
+    return (
+        voice_profile is not None
+        and current_user is not None
+        and current_user.role in (ROLE_PARENT, ROLE_TEACHER)
+        and voice_profile.parent_id == current_user.id
+    )
+
+
+def can_access_book_narration(narration):
+    """Narrations inherit access from the private voice profile they use."""
+    return (
+        narration is not None
+        and narration.voice_profile is not None
+        and current_user is not None
+        and (current_user.is_admin or narration.voice_profile.parent_id == current_user.id)
+    )
