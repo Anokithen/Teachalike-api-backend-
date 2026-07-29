@@ -1,0 +1,1 @@
+"""TeachAlike API test package."""
