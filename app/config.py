@@ -71,38 +71,27 @@ def _is_railway_environment():
     )
 
 
-def _railway_database_url():
-    """Return the first complete MySQL URL exposed to the API service."""
-    for name in ("MYSQL_URL", "DATABASE_URL", "MYSQL_PUBLIC_URL"):
-        database_url = _env_value(name)
-        if database_url.startswith("mysql://"):
-            return database_url.replace("mysql://", "mysql+pymysql://", 1)
-        if database_url.startswith("mysql+pymysql://"):
-            return database_url
-    return ""
+_DATABASE_ENV_NAMES = (
+    "DB_NAME",
+    "DN_HOST",
+    "DB_PASSWORD",
+    "DB_PORT",
+    "DB_USER",
+)
+
+
+def _database_is_configured():
+    """Return whether every required database variable has a usable value."""
+    return all(_env_value(name) for name in _DATABASE_ENV_NAMES)
 
 
 def _build_database_uri():
-    """Build a MySQL URI from a full URL or individual connection values."""
-    database_url = _railway_database_url()
-    if database_url:
-        return database_url
-
-    db_user = _env_value("MYSQLUSER", "DB_USER", default="root")
-    db_password = _env_value(
-        "MYSQLPASSWORD",
-        "MYSQL_ROOT_PASSWORD",
-        "DB_PASSWORD",
-        default="root123",
-    )
-    db_host = _env_value("MYSQLHOST", "DB_HOST", default="localhost")
-    db_port = _env_value("MYSQLPORT", "DB_PORT", default="3306")
-    db_name = _env_value(
-        "MYSQLDATABASE",
-        "MYSQL_DATABASE",
-        "DB_NAME",
-        default="teachalike_db",
-    )
+    """Build the MySQL URI using only the five supported DB variables."""
+    db_user = _env_value("DB_USER", default="root")
+    db_password = _env_value("DB_PASSWORD", default="root123")
+    db_host = _env_value("DN_HOST", default="localhost")
+    db_port = _env_value("DB_PORT", default="3306")
+    db_name = _env_value("DB_NAME", default="teachalike_db")
 
     return (
         f"mysql+pymysql://{quote_plus(db_user)}:{quote_plus(db_password)}"
@@ -112,15 +101,12 @@ def _build_database_uri():
 
 class Config:
     IS_RAILWAY = _is_railway_environment()
-    DATABASE_IS_CONFIGURED = bool(
-        _railway_database_url()
-        or _env_value("MYSQLHOST", "DB_HOST")
-    )
-    DB_USER = os.getenv("DB_USER")
-    DB_PASSWORD = os.getenv("DB_PASSWORD")
-    DB_HOST = os.getenv("DB_HOST")
-    DB_NAME = os.getenv("DB_NAME")
-    DB_PORT = os.getenv("DB_PORT")
+    DATABASE_IS_CONFIGURED = _database_is_configured()
+    DB_USER = _env_value("DB_USER", default="root")
+    DB_PASSWORD = _env_value("DB_PASSWORD", default="root123")
+    DN_HOST = _env_value("DN_HOST", default="localhost")
+    DB_NAME = _env_value("DB_NAME", default="teachalike_db")
+    DB_PORT = _env_value("DB_PORT", default="3306")
 
     SQLALCHEMY_DATABASE_URI = _build_database_uri()
     SQLALCHEMY_TRACK_MODIFICATIONS = False

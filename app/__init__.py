@@ -155,8 +155,8 @@ def _validate_deployment_config(app):
         return
     if not app.config["DATABASE_IS_CONFIGURED"]:
         raise RuntimeError(
-            "Database configuration is missing. Set MYSQL_URL to a MySQL "
-            "service reference on the API service."
+            "Database configuration is missing. Set DB_NAME, DN_HOST, "
+            "DB_PASSWORD, DB_PORT, and DB_USER on the API service."
         )
     if app.config["JWT_SECRET_KEY_IS_EPHEMERAL"]:
         raise RuntimeError("JWT_SECRET_KEY must be set to a stable secret.")

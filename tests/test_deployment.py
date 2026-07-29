@@ -12,6 +12,7 @@ from app import _validate_deployment_config, create_app
 from app.config import (
     Config,
     _build_database_uri,
+    _database_is_configured,
     _is_railway_environment,
 )
 from app.extensions import db
@@ -26,13 +27,15 @@ class DatabaseConfigTests(unittest.TestCase):
         ):
             self.assertTrue(_is_railway_environment())
 
-    def test_mysql_url_uses_the_pymysql_driver(self):
+    def test_database_uri_uses_only_supported_variables(self):
         with patch.dict(
             os.environ,
             {
-                "MYSQL_URL": (
-                    "mysql://user:secret@mysql.railway.internal:3306/railway"
-                ),
+                "DB_NAME": "railway",
+                "DN_HOST": "mysql.railway.internal",
+                "DB_PASSWORD": "secret",
+                "DB_PORT": "3306",
+                "DB_USER": "user",
             },
             clear=True,
         ):
@@ -43,32 +46,15 @@ class DatabaseConfigTests(unittest.TestCase):
             "mysql+pymysql://user:secret@mysql.railway.internal:3306/railway",
         )
 
-    def test_private_database_url_precedes_public_url(self):
+    def test_database_credentials_are_url_encoded(self):
         with patch.dict(
             os.environ,
             {
-                "MYSQL_URL": "mysql://user:secret@private:3306/railway",
-                "MYSQL_PUBLIC_URL": "mysql://user:secret@public:1234/railway",
-            },
-            clear=True,
-        ):
-            uri = _build_database_uri()
-
-        self.assertEqual(
-            uri,
-            "mysql+pymysql://user:secret@private:3306/railway",
-        )
-
-    def test_malformed_mysql_url_does_not_block_db_fallback(self):
-        with patch.dict(
-            os.environ,
-            {
-                "MYSQL_URL": "host-without-a-scheme:3306",
-                "DB_USER": "root",
+                "DB_NAME": "teach alike",
+                "DN_HOST": "database.example",
                 "DB_PASSWORD": "p@ss/word",
-                "DB_HOST": "database.example",
                 "DB_PORT": "3306",
-                "DB_NAME": "teachalike",
+                "DB_USER": "root user",
             },
             clear=True,
         ):
@@ -76,9 +62,50 @@ class DatabaseConfigTests(unittest.TestCase):
 
         self.assertEqual(
             uri,
-            "mysql+pymysql://root:p%40ss%2Fword"
-            "@database.example:3306/teachalike",
+            "mysql+pymysql://root+user:p%40ss%2Fword"
+            "@database.example:3306/teach+alike",
         )
+
+    def test_other_database_variables_are_ignored(self):
+        with patch.dict(
+            os.environ,
+            {
+                "MYSQL_URL": "mysql://wrong:wrong@wrong:9999/wrong",
+                "DATABASE_URL": "mysql://wrong:wrong@wrong:9999/wrong",
+                "MYSQLHOST": "wrong",
+                "DB_HOST": "wrong",
+                "DB_NAME": "railway",
+                "DN_HOST": "database.example",
+                "DB_PASSWORD": "secret",
+                "DB_PORT": "3306",
+                "DB_USER": "root",
+            },
+            clear=True,
+        ):
+            uri = _build_database_uri()
+
+        self.assertEqual(
+            uri,
+            "mysql+pymysql://root:secret@database.example:3306/railway",
+        )
+
+    def test_all_five_database_variables_are_required_for_deployment(self):
+        complete_environment = {
+            "DB_NAME": "railway",
+            "DN_HOST": "database.example",
+            "DB_PASSWORD": "secret",
+            "DB_PORT": "3306",
+            "DB_USER": "root",
+        }
+        with patch.dict(os.environ, complete_environment, clear=True):
+            self.assertTrue(_database_is_configured())
+
+        for missing_name in complete_environment:
+            incomplete_environment = complete_environment.copy()
+            incomplete_environment.pop(missing_name)
+            with self.subTest(missing_name=missing_name):
+                with patch.dict(os.environ, incomplete_environment, clear=True):
+                    self.assertFalse(_database_is_configured())
 
 
 class DeploymentValidationTests(unittest.TestCase):

@@ -29,7 +29,11 @@ dependencies and ffmpeg, and `railway.toml` configures the database-aware
 Set these variables on the backend service:
 
 ```env
-MYSQL_URL=${{MySQL.MYSQL_URL}}
+DB_NAME=${{MySQL.MYSQLDATABASE}}
+DN_HOST=${{MySQL.MYSQLHOST}}
+DB_PASSWORD=${{MySQL.MYSQLPASSWORD}}
+DB_PORT=${{MySQL.MYSQLPORT}}
+DB_USER=${{MySQL.MYSQLUSER}}
 JWT_SECRET_KEY=replace-with-a-new-random-secret-of-at-least-32-characters
 FRONTEND_ORIGINS=https://your-project.vercel.app
 AUTO_CREATE_TABLES=true
@@ -39,11 +43,12 @@ DB_QUERY_TIMEOUT_SECONDS=30
 ```
 
 Use Railway's variable-reference autocomplete because `MySQL` must match the
-database service's exact name. Do not set `MYSQL_URL` to a bare hostname and
-port. The application converts the complete `mysql://` URL to the PyMySQL
-driver, creates and verifies all model tables before serving traffic, and
-fails deployment with the exact initialization stage if the database is not
-ready.
+database service's exact name. The application builds the PyMySQL connection
+using only `DB_NAME`, `DN_HOST`, `DB_PASSWORD`, `DB_PORT`, and `DB_USER`;
+`MYSQL_URL`, `DATABASE_URL`, `DB_HOST`, and Railway's `MYSQL*` variables are
+not read directly by the backend. It creates and verifies all model tables
+before serving traffic and fails deployment with the exact initialization
+stage if the database is not ready.
 
 Generate a unique JWT secret, for example with `openssl rand -hex 32`. Never
 put database credentials, provider secrets, or JWT secrets in the frontend.
