@@ -54,3 +54,49 @@ def collect_account_asset_refs(account):
         "cloudinary": cloudinary_assets,
         "elevenlabs": [item for item in elevenlabs if item],
     }
+
+
+def delete_account_asset_refs(asset_refs, config, logger):
+    """Delete a previously captured set of Cloudinary and ElevenLabs assets."""
+    failures = []
+    seen_cloudinary_ids = set()
+    seen_elevenlabs_ids = set()
+
+    def delete_cloudinary(reference):
+        public_id = reference.get("public_id")
+        if not public_id or public_id in seen_cloudinary_ids:
+            return
+        seen_cloudinary_ids.add(public_id)
+        try:
+            delete_asset(
+                public_id,
+                reference.get("resource_type") or "auto",
+                reference.get("delivery_type") or "upload",
+                config=config,
+            )
+        except Exception as exc:
+            logger.exception(
+                "Could not delete account Cloudinary asset public_id=%s",
+                public_id,
+            )
+            failures.append(exc)
+
+    def delete_elevenlabs(voice_id, label):
+        if not voice_id or voice_id in seen_elevenlabs_ids:
+            return
+        seen_elevenlabs_ids.add(voice_id)
+        try:
+            delete_voice(voice_id, config)
+        except Exception as exc:
+            logger.exception("Could not delete %s", label)
+            failures.append(exc)
+
+    for reference in asset_refs.get("cloudinary", []):
+        delete_cloudinary(reference)
+    for voice_id in asset_refs.get("elevenlabs", []):
+        delete_elevenlabs(voice_id, "an ElevenLabs voice clone")
+
+    if failures:
+        raise RuntimeError(
+            "Some external account assets could not be deleted. Cleanup will need to be retried."
+        )
