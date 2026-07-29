@@ -36,3 +36,40 @@ class RailwayConfigTests(unittest.TestCase):
             uri,
             "mysql+pymysql://private-user:secret@mysql.railway.internal:3306/app",
         )
+
+
+class ReadinessTests(unittest.TestCase):
+    def setUp(self):
+        handle, self.database_path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(handle)
+        Config.SQLALCHEMY_DATABASE_URI = f"sqlite:///{self.database_path}"
+        Config.SQLALCHEMY_ENGINE_OPTIONS = {}
+        self.app = create_app()
+        self.context = self.app.app_context()
+        self.context.push()
+        self.client = self.app.test_client()
+
+    def tearDown(self):
+        db.session.remove()
+        db.drop_all()
+        self.context.pop()
+        os.unlink(self.database_path)
+
+    def test_liveness_and_database_readiness_are_separate(self):
+        self.assertEqual(self.client.get("/health").status_code, 200)
+        response = self.client.get("/health/ready")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["database"], "ready")
+
+    def test_readiness_fails_when_a_required_table_is_missing(self):
+        db.session.execute(text("DROP TABLE revoked_tokens"))
+        db.session.commit()
+
+        self.assertEqual(self.client.get("/health").status_code, 200)
+        response = self.client.get("/health/ready")
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json["database"], "unavailable")
+
+
+if __name__ == "__main__":
+    unittest.main()
