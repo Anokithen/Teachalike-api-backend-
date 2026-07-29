@@ -146,3 +146,105 @@ def _narration_worker_is_live(narration_id):
     with NARRATION_FUTURES_LOCK:
         future = NARRATION_FUTURES.get(narration_id)
         return future is not None and not future.done()
+
+
+def create_book_narration(book_id):
+    book = db.session.get(Book, book_id)
+    if not book:
+        return jsonify({"error": "Book not found."}), 404
+    data = request.get_json(silent=True) or {}
+    voice_profile_id = data.get("voice_profile_id")
+    profile = db.session.get(VoiceProfile, voice_profile_id) if voice_profile_id else None
+    if not (voice_profile_belongs_to_current_parent(profile) or current_user.is_admin):
+        return jsonify({"errors": ["voice_profile_id must reference a voice profile owned by this account."]}), 400
+    if profile.status != VOICE_STATUS_READY:
+        return jsonify({"errors": ["The selected voice profile is not ready yet."]}), 400
+    if not (book.text_content or "").strip():
+        return jsonify({"errors": ["This book has no text available for narration."]}), 400
+
+    existing = (
+        BookNarration.query.filter_by(
+            book_id=book.id,
+            voice_profile_id=profile.id,
+        )
+        .order_by(BookNarration.id.desc())
+        .first()
+    )
+    if existing:
+        # Preserve the unique cache row, but allow a failed transient/configuration
+        # job to be retried after the server has been corrected.
+        if existing.status == STATUS_FAILED:
+            existing.status = STATUS_PROCESSING
+            existing.error_message = None
+            db.session.commit()
+            _enqueue_narration(existing.id)
+            return jsonify({"message": "Narration generation restarted.", "book_narration": existing.to_dict(), "existing": True}), 202
+        if existing.status == STATUS_PROCESSING and _enqueue_narration(existing.id):
+            # A processing row with no live future is an orphan left by a
+            # restart. Re-queue it so the UI cannot remain stuck indefinitely.
+            return jsonify({"message": "Narration generation restarted.", "book_narration": existing.to_dict(), "existing": True}), 202
+        return jsonify({"book_narration": existing.to_dict(), "existing": True}), 200
+
+    try:
+        narration = BookNarration(
+            book_id=book.id,
+            voice_profile_id=profile.id,
+            status=STATUS_PROCESSING,
+        )
+        db.session.add(narration)
+        db.session.flush()
+        narration.cloudinary_public_id = book_narration_public_id(
+            profile.parent_id,
+            profile.parent.name,
+            book.id,
+            book.title,
+            profile.id,
+            narration.id,
+        )
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        return jsonify({"error": "An internal server error occurred."}), 500
+
+    _enqueue_narration(narration.id)
+    return jsonify({"message": "Narration generation started.", "book_narration": narration.to_dict()}), 201
+
+
+def list_book_narrations(book_id):
+    if not db.session.get(Book, book_id):
+        return jsonify({"error": "Book not found."}), 404
+    query = BookNarration.query.filter_by(book_id=book_id)
+    if not current_user.is_admin:
+        query = query.join(VoiceProfile).filter(VoiceProfile.parent_id == current_user.id)
+    narrations = query.order_by(BookNarration.id.desc()).all()
+    return jsonify({"book_narrations": [narration.to_dict() for narration in narrations]}), 200
+
+
+def get_book_narration_status(narration_id):
+    narration = db.session.get(BookNarration, narration_id)
+    if not can_access_book_narration(narration):
+        return jsonify({"error": "Book narration not found."}), 404
+    if narration.status == STATUS_PROCESSING and not _narration_worker_is_live(narration.id):
+        # Status polling is also a recovery path after a gunicorn/Railway
+        # restart, when the in-memory executor and its future are lost.
+        _enqueue_narration(narration.id)
+    return jsonify(narration.to_dict()), 200
+
+
+def get_book_narration_audio(narration_id):
+    narration = db.session.get(BookNarration, narration_id)
+    if not can_access_book_narration(narration):
+        return jsonify({"error": "Book narration not found."}), 404
+    if narration.status != STATUS_READY or not narration.narration_audio_url:
+        return jsonify({"error": "This narration is not ready yet."}), 409
+    try:
+        return stream_authenticated_audio(
+            narration.cloudinary_public_id,
+            narration.narration_audio_url,
+            current_app.config,
+            request.headers.get("Range"),
+        )
+    except CloudinaryServiceError:
+        return jsonify({
+            "error": "Narration playback is temporarily unavailable."
+        }), 503
