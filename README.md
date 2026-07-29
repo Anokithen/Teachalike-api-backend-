@@ -23,8 +23,8 @@ Reading-session microphone recordings are converted to mono 16 kHz WAV with ffmp
 
 Deploy this repository as the backend service and add a MySQL service in the
 same Railway project. The included `Dockerfile` installs the Python
-dependencies and ffmpeg, and `railway.toml` configures the database-aware
-`/health/ready` deployment check.
+dependencies and ffmpeg. Railway deployment health checks are disabled, so
+database readiness does not gate a deployment.
 
 Set these variables on the backend service:
 
@@ -61,8 +61,9 @@ GET https://your-backend.up.railway.app/health
 GET https://your-backend.up.railway.app/health/ready
 ```
 
-Both endpoints should return HTTP 200, and readiness should include
-`"database": "ready"`.
+These endpoints remain available for optional monitoring. Readiness returns
+HTTP 200 with `"database": "ready"` when the database is reachable and its
+schema is complete.
 
 The browser records audio, uploads it to the authenticated `/api/reading-sessions/:id/pronunciation-transcript` endpoint, and then sends the returned transcript to the existing pronunciation scoring endpoint. Recordings are deleted from the server immediately after transcription.
 
