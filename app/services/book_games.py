@@ -96,3 +96,63 @@ def _build_quiz_content(book, words, config=None):
             except RuntimeError:
                 pass
     return _fallback_quiz_content(words, book)
+
+
+def ensure_story_quiz(book, quiz_game=None, config=None):
+    """Create or upgrade one book's quiz, returning whether it changed."""
+    words = _keywords(book)
+    quiz_game = quiz_game or MiniGame.query.filter_by(book_id=book.id, game_type="quiz").first()
+    if quiz_game is None:
+        quiz_game = MiniGame(
+            book_id=book.id,
+            game_type="quiz",
+            difficulty="easy",
+            rules={},
+            content={},
+        )
+        db.session.add(quiz_game)
+
+    content = quiz_game.content if isinstance(quiz_game.content, dict) else {}
+    config = _runtime_config(config)
+    is_current_gemini = content.get("generator_version") == QUIZ_GENERATOR
+    can_upgrade_fallback = content.get("generator") == "fallback" and _has_gemini_key(config)
+    if is_current_gemini and not can_upgrade_fallback:
+        return False
+
+    quiz_game.content = _build_quiz_content(book, words, config)
+    quiz_game.rules = {
+        "questions_to_pass": max(2, min(3, len(quiz_game.content["questions"]))),
+        "points_per_question": 10,
+        "hint_points": 5,
+    }
+    return True
+
+
+def create_default_mini_games(book, config=None):
+    """Add each standard game once, without duplicating games already present."""
+    words = _keywords(book)
+    existing_types = {
+        game.game_type for game in MiniGame.query.filter_by(book_id=book.id).all()
+    }
+    games = []
+    defaults = [
+        ("word_puzzle", "easy", {"time_limit_seconds": 60}, {"words": words}),
+        ("spelling", "medium", {"lives": 3}, {"words": words}),
+    ]
+    for game_type, difficulty, rules, content in defaults:
+        if game_type not in existing_types:
+            game = MiniGame(
+                book_id=book.id,
+                game_type=game_type,
+                difficulty=difficulty,
+                rules=rules,
+                content=content,
+            )
+            db.session.add(game)
+            games.append(game)
+    quiz = MiniGame.query.filter_by(book_id=book.id, game_type="quiz").first()
+    if ensure_story_quiz(book, quiz, config):
+        updated_quiz = quiz or MiniGame.query.filter_by(book_id=book.id, game_type="quiz").first()
+        if updated_quiz is not None:
+            games.append(updated_quiz)
+    return games
