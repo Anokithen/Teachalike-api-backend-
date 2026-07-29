@@ -180,3 +180,108 @@ def transcribe_pronunciation(session_id):
         return jsonify({"transcript": transcript}), 200
     except NvidiaSpeechError as err:
         return jsonify({"error": str(err)}), 503
+
+
+def check_pronunciation(session_id):
+    """Compare browser speech-to-text with a book paragraph and award points once."""
+    session = db.session.get(ReadingSession, session_id)
+    if not _session_belongs_to_current_parent(session):
+        return jsonify({"error": "Reading session not found."}), 404
+    if session.completed_at:
+        return jsonify({"error": "This reading session is already complete."}), 400
+
+    data = request.get_json(silent=True) or {}
+    # Accept the old key for clients that have not been updated yet.
+    paragraph_index = data.get("paragraph_index", data.get("sentence_index"))
+    transcript = data.get("transcript")
+    if isinstance(paragraph_index, bool) or not isinstance(paragraph_index, int) or paragraph_index < 0:
+        return jsonify({"error": "A valid paragraph_index is required."}), 400
+    if not isinstance(transcript, str) or not transcript.strip():
+        return jsonify({"error": "A spoken transcript is required."}), 400
+    if len(transcript) > 1000:
+        return jsonify({"error": "The spoken transcript is too long."}), 400
+    paragraphs = _book_paragraphs(session.book.text_content if session.book else None)
+    if paragraph_index >= len(paragraphs):
+        return jsonify({"error": "That paragraph does not exist in this book."}), 400
+
+    expected = _normalise_spoken_text(paragraphs[paragraph_index])
+    spoken = _normalise_spoken_text(transcript)
+    if not expected or not spoken:
+        return jsonify({"error": "We could not compare that reading. Please try again."}), 400
+
+    selected_model = str(current_app.config.get("GROQ_MODEL") or "").strip() or None
+    scoring_provider = "groq"
+    scoring_feedback = None
+    try:
+        score_percent, scoring_feedback = score_groq_pronunciation(
+            paragraphs[paragraph_index], transcript.strip(), current_app.config
+        )
+        score = score_percent / 100
+    except GroqError:
+        # Keep the test usable when the external scoring provider is briefly
+        # unavailable; transcription still came from the configured ASR service.
+        score = SequenceMatcher(None, expected, spoken).ratio()
+        scoring_provider = "local-fallback"
+    accuracy_percent = round(score * 100)
+    points_for_reading = _points_for_accuracy(accuracy_percent)
+    log = list(session.progress_log or [])
+    already_awarded = any(
+        entry.get("type") == "pronunciation_check"
+        and entry.get("awarded_points", 0) > 0
+        and entry.get("paragraph_index", entry.get("sentence_index")) == paragraph_index
+        for entry in log
+        if isinstance(entry, dict)
+    )
+    points_awarded = points_for_reading if not already_awarded else 0
+
+    try:
+        log.append(
+            {
+                "type": "pronunciation_check",
+                "paragraph_index": paragraph_index,
+                "transcript": transcript.strip(),
+                "accuracy": accuracy_percent,
+                "awarded_points": points_awarded,
+                "scoring_provider": scoring_provider,
+                "scoring_model": selected_model,
+            }
+        )
+        session.progress_log = log
+        if points_awarded:
+            _award_leaderboard_points(session.child_id, points_awarded)
+        db.session.commit()
+        message = (
+            f"Great reading! {points_awarded} points have been added to the leaderboard."
+            if points_awarded
+            else "This paragraph was already rewarded."
+            if already_awarded
+            else "Keep trying — read the paragraph again a little more clearly."
+        )
+        return jsonify(
+            {
+                "correct": accuracy_percent > 0,
+                "accuracy": accuracy_percent,
+                "points_awarded": points_awarded,
+                "already_awarded": already_awarded,
+                "scoring_provider": scoring_provider,
+                "scoring_model": selected_model,
+                "feedback": scoring_feedback,
+                "message": message,
+            }
+        ), 200
+    except Exception:
+        db.session.rollback()
+        return jsonify({"error": "An internal server error occurred."}), 500
+
+
+def list_child_reading_sessions(child_id):
+    child = db.session.get(Child, child_id)
+    if not child_belongs_to_current_parent(child):
+        return jsonify({"error": "Child not found."}), 404
+
+    sessions = (
+        ReadingSession.query.filter_by(child_id=child_id)
+        .order_by(ReadingSession.started_at.desc())
+        .all()
+    )
+    return jsonify({"reading_sessions": [s.to_dict() for s in sessions]}), 200
