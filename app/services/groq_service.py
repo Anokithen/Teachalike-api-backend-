@@ -110,3 +110,80 @@ def list_models(config):
         return _parse_models(response)
     except (AttributeError, TypeError, ValueError) as err:
         raise GroqError("Groq returned an invalid model list.") from err
+
+def _model(config, requested_model):
+    model = str(requested_model or config.get("GROQ_MODEL") or DEFAULT_MODEL).strip()
+    if not model or len(model) > 200:
+        raise GroqError("Choose a valid Groq model.")
+    return model
+
+
+def _chat_completion(messages, requested_model, config, *, temperature, max_tokens):
+    model = _model(config, requested_model)
+    try:
+        response = requests.post(
+            f"{_base_url(config)}/chat/completions",
+            headers=_headers(config),
+            json={
+                "model": model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "stream": False,
+            },
+            timeout=(10, max(10, int(config.get("GROQ_REQUEST_TIMEOUT", 60)))),
+        )
+    except requests.RequestException as err:
+        raise GroqError("Groq could not be reached while processing the request.") from err
+
+    if not response.ok:
+        raise GroqError(f"Groq request failed: {_error_message(response)}")
+    try:
+        return response.json()["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError, ValueError) as err:
+        raise GroqError("Groq returned an unexpected response.") from err
+
+
+def generate_book_draft(age_group, reading_level, idea, config, model=None):
+    """Generate a structured children's book draft through Groq."""
+    idea = str(idea or "").strip()
+    if not idea:
+        raise GroqError("A story idea is required.")
+
+    prompt = f"""
+Write an original children's story for the TeachAlike reading app.
+
+Age group: {str(age_group or '').strip()}
+Reading level: {str(reading_level or '').strip()}
+Story idea: {idea[:500]}
+
+Return a short, engaging story with a clear beginning, middle, and ending.
+Use warm, age-appropriate language, vivid but safe imagery, and short paragraphs.
+Do not include a preface, lesson-plan notes, markdown headings, or questions.
+Return ONLY valid JSON with exactly these string fields:
+{{"title": "Story title", "text_content": "The complete story text"}}
+Do not wrap the JSON in markdown fences.
+"""
+    content = _chat_completion(
+        [
+            {
+                "role": "system",
+                "content": "You create safe, original children's books and follow JSON output instructions exactly.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        model,
+        config,
+        temperature=0.8,
+        max_tokens=2200,
+    )
+    try:
+        generated = _json_from_content(content)
+    except (TypeError, ValueError) as err:
+        raise GroqError("Groq returned book content in an unexpected format.") from err
+
+    title = str(generated.get("title") or "").strip() if isinstance(generated, dict) else ""
+    text_content = str(generated.get("text_content") or "").strip() if isinstance(generated, dict) else ""
+    if not title or not text_content:
+        raise GroqError("Groq returned an incomplete book draft.")
+    return {"title": title[:200], "text_content": text_content[:30000]}
