@@ -187,3 +187,41 @@ Do not wrap the JSON in markdown fences.
     if not title or not text_content:
         raise GroqError("Groq returned an incomplete book draft.")
     return {"title": title[:200], "text_content": text_content[:30000]}
+
+
+def score_pronunciation(expected_sentence, spoken_transcript, config, model=None):
+    """Ask Groq to score transcript fidelity, returning (score, feedback)."""
+    prompt = f"""
+You are scoring a child's pronunciation reading from an ASR transcript.
+
+Target sentence: {expected_sentence}
+Spoken transcript: {spoken_transcript}
+
+Score how faithfully the spoken transcript matches the target sentence.
+Use 100 for an exact or near-exact reading, lower scores for missing,
+substituted, or extra words. Do not reward a paraphrase as a correct reading.
+Return ONLY valid JSON with exactly these fields:
+{{"accuracy": 0, "feedback": "short encouraging feedback"}}
+The accuracy must be an integer from 0 to 100. Keep feedback under 160 characters.
+"""
+    content = _chat_completion(
+        [
+            {
+                "role": "system",
+                "content": "You grade transcript fidelity consistently and return only the requested JSON.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        model,
+        config,
+        temperature=0.1,
+        max_tokens=180,
+    )
+    try:
+        result = _json_from_content(content)
+        accuracy = int(result["accuracy"])
+        feedback = str(result.get("feedback") or "Keep reading clearly and try again.").strip()
+    except (KeyError, IndexError, TypeError, ValueError) as err:
+        raise GroqError("Groq returned an invalid pronunciation score.") from err
+
+    return max(0, min(100, accuracy)), feedback[:160]
