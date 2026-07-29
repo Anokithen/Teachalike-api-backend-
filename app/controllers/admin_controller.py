@@ -271,3 +271,100 @@ def upload_media():
         return jsonify({"error": "Media upload failed."}), 503
     except Exception:
         return jsonify({"error": "Media upload failed."}), 500
+
+
+def _list_accounts_by_role(role):
+    accounts = Parent.query.filter_by(role=role).order_by(Parent.id.desc()).all()
+    results = []
+    for account in accounts:
+        item = account.to_dict()
+        if role == ROLE_PARENT:
+            item["children_count"] = Child.query.filter_by(parent_id=account.id).count()
+        results.append(item)
+    return results
+
+
+def list_parents():
+    """GET /api/admin/parents"""
+    return jsonify({"parents": _list_accounts_by_role(ROLE_PARENT)}), 200
+
+
+def list_teachers():
+    """GET /api/admin/teachers"""
+    return jsonify({"teachers": _list_accounts_by_role(ROLE_TEACHER)}), 200
+
+
+def get_parent(parent_id):
+    """GET /api/admin/parents/<id> — full detail including their children."""
+    parent = db.session.get(Parent, parent_id)
+    if not parent or parent.role != ROLE_PARENT:
+        return jsonify({"error": "Parent not found."}), 404
+
+    children = Child.query.filter_by(parent_id=parent.id).order_by(Child.id.desc()).all()
+    data = parent.to_dict()
+    data["children"] = [c.to_dict() for c in children]
+    return jsonify({"parent": data}), 200
+
+
+def _get_target_account(account_id, expected_role=None):
+    account = db.session.get(Parent, account_id)
+    if not account:
+        return None, (jsonify({"error": "Account not found."}), 404)
+    if expected_role and account.role != expected_role:
+        return None, (jsonify({"error": "Account not found."}), 404)
+    if account.id == current_user.id:
+        return None, (jsonify({"error": "You cannot perform this action on your own account."}), 400)
+    if account.is_admin:
+        return None, (jsonify({"error": "Admin accounts cannot be managed through this endpoint."}), 403)
+    return account, None
+
+
+def ban_account(account_id, expected_role=None):
+    """PATCH /api/admin/parents/<id>/ban or /api/admin/teachers/<id>/ban"""
+    account, error_response = _get_target_account(account_id, expected_role)
+    if error_response:
+        return error_response
+
+    try:
+        account.is_banned = True
+        db.session.commit()
+        return jsonify({"message": "Account banned successfully.", "account": account.to_dict()}), 200
+    except Exception:
+        db.session.rollback()
+        return jsonify({"error": "An internal server error occurred."}), 500
+
+
+def unban_account(account_id, expected_role=None):
+    """PATCH /api/admin/parents/<id>/unban or /api/admin/teachers/<id>/unban"""
+    account, error_response = _get_target_account(account_id, expected_role)
+    if error_response:
+        return error_response
+
+    try:
+        account.is_banned = False
+        db.session.commit()
+        return jsonify({"message": "Account unbanned successfully.", "account": account.to_dict()}), 200
+    except Exception:
+        db.session.rollback()
+        return jsonify({"error": "An internal server error occurred."}), 500
+
+
+def delete_account(account_id, expected_role=None):
+    """DELETE /api/admin/parents/<id> or /api/admin/teachers/<id>
+
+    Deleting a parent cascades to their children and voice profiles, same as
+    a parent deleting their own account.
+    """
+    account, error_response = _get_target_account(account_id, expected_role)
+    if error_response:
+        return error_response
+
+    try:
+        asset_refs = collect_account_asset_refs(account)
+        db.session.delete(account)
+        db.session.commit()
+        schedule_account_asset_cleanup(asset_refs)
+        return jsonify({"message": "Account deleted successfully. External asset cleanup is in progress."}), 202
+    except Exception:
+        db.session.rollback()
+        return jsonify({"error": "An internal server error occurred."}), 500
