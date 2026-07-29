@@ -56,3 +56,61 @@ def list_teachers():
 @admin_required
 def register_teacher():
     return ctrl.register_teacher()
+
+
+@admin_bp.route("/teachers/<int:teacher_id>/ban", methods=["PATCH"])
+@admin_required
+def ban_teacher(teacher_id):
+    return ctrl.ban_account(teacher_id, ROLE_TEACHER)
+
+
+@admin_bp.route("/teachers/<int:teacher_id>/unban", methods=["PATCH"])
+@admin_required
+def unban_teacher(teacher_id):
+    return ctrl.unban_account(teacher_id, ROLE_TEACHER)
+
+
+@admin_bp.route("/teachers/<int:teacher_id>", methods=["DELETE"])
+@admin_required
+def delete_teacher(teacher_id):
+    return ctrl.delete_account(teacher_id, ROLE_TEACHER)
+
+
+# --- Other admins (bootstrap additional admin accounts) -------------------
+
+@admin_bp.route("/admins", methods=["POST"])
+@admin_required
+def register_admin():
+    return ctrl.register_admin()
+
+
+# --- Books --------------------------------------------------------------
+
+@admin_bp.route("/books", methods=["POST"])
+@admin_required
+def create_book():
+    return ctrl.create_book()
+
+
+@admin_bp.route("/books/<int:book_id>", methods=["PATCH"])
+@admin_required
+def update_book(book_id):
+    return ctrl.update_book(book_id)
+
+
+@admin_bp.route("/books/<int:book_id>", methods=["DELETE"])
+@admin_required
+def delete_book(book_id):
+    return ctrl.delete_book(book_id)
+
+
+@admin_bp.route("/book-draft", methods=["POST"])
+@admin_required
+def generate_book_draft():
+    return ctrl.generate_book_draft_for_admin()
+
+
+@admin_bp.route("/book-media", methods=["POST"])
+@admin_required
+def upload_book_media():
+    return ctrl.upload_media()
