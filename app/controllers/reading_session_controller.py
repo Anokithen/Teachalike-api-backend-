@@ -110,3 +110,73 @@ def create_reading_session():
     except Exception:
         db.session.rollback()
         return jsonify({"error": "An internal server error occurred."}), 500
+
+
+def update_reading_session(session_id):
+    session = db.session.get(ReadingSession, session_id)
+    if not _session_belongs_to_current_parent(session):
+        return jsonify({"error": "Reading session not found."}), 404
+
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "Request body is required."}), 400
+
+    try:
+        if "progress_entry" in data:
+            entry = data.get("progress_entry")
+            if not isinstance(entry, dict):
+                return jsonify({"error": "progress_entry must be an object."}), 400
+            log = list(session.progress_log or [])
+            log.append(entry)
+            session.progress_log = log
+
+        if "accuracy_score" in data and data.get("accuracy_score") is not None:
+            accuracy_score = float(data.get("accuracy_score"))
+            if not math.isfinite(accuracy_score) or not 0 <= accuracy_score <= 100:
+                db.session.rollback()
+                return jsonify({"error": "accuracy_score must be between 0 and 100."}), 400
+            session.accuracy_score = accuracy_score
+
+        if data.get("mark_complete"):
+            session.completed_at = utc_now()
+
+        db.session.commit()
+        return jsonify(
+            {"message": "Reading session updated.", "reading_session": session.to_dict()}
+        ), 200
+    except (TypeError, ValueError):
+        db.session.rollback()
+        return jsonify({"error": "accuracy_score must be a number between 0 and 100."}), 400
+    except Exception:
+        db.session.rollback()
+        return jsonify({"error": "An internal server error occurred."}), 500
+
+
+def get_reading_session(session_id):
+    session = db.session.get(ReadingSession, session_id)
+    if not _session_belongs_to_current_parent(session):
+        return jsonify({"error": "Reading session not found."}), 404
+    return jsonify({"reading_session": session.to_dict()}), 200
+
+
+def transcribe_pronunciation(session_id):
+    """Transcribe a microphone recording with NVIDIA's hosted ASR service."""
+    session = db.session.get(ReadingSession, session_id)
+    if not _session_belongs_to_current_parent(session):
+        return jsonify({"error": "Reading session not found."}), 404
+    if session.completed_at:
+        return jsonify({"error": "This reading session is already complete."}), 400
+    recording = request.files.get("audio")
+    if recording is None or not recording.filename:
+        return jsonify({"error": "A microphone recording is required."}), 400
+    try:
+        validate_uploaded_file(recording, "audio")
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    try:
+        transcript = transcribe_audio(recording)
+        if not transcript:
+            return jsonify({"error": "No words were heard. Try again a little closer to the microphone."}), 422
+        return jsonify({"transcript": transcript}), 200
+    except NvidiaSpeechError as err:
+        return jsonify({"error": str(err)}), 503
