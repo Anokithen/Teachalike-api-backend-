@@ -37,3 +37,41 @@ def update_child(child_id):
 @jwt_required()
 def verify_child_pin(child_id):
     return ctrl.verify_child_pin(child_id)
+
+
+@child_bp.route("/<int:child_id>", methods=["DELETE"])
+@jwt_required()
+def delete_child(child_id):
+    return ctrl.delete_child(child_id)
+
+
+@child_bp.route("/<int:child_id>/profile-image", methods=["POST"])
+@jwt_required()
+def upload_profile_image(child_id):
+    return ctrl.upload_profile_image_for_child(child_id)
+
+
+@child_bp.route("/<int:child_id>/profile-image", methods=["DELETE"])
+@jwt_required()
+def delete_profile_image(child_id):
+    return ctrl.delete_profile_image_for_child(child_id)
+
+
+# --- nested resources that only make sense in the context of a child ---
+
+@child_bp.route("/<int:child_id>/reading-sessions", methods=["GET"])
+@jwt_required()
+def list_child_reading_sessions(child_id):
+    return session_ctrl.list_child_reading_sessions(child_id)
+
+
+@child_bp.route("/<int:child_id>/game-results", methods=["GET"])
+@jwt_required()
+def list_child_game_results(child_id):
+    return result_ctrl.list_child_game_results(child_id)
+
+
+@child_bp.route("/<int:child_id>/leaderboard-entry", methods=["GET"])
+@jwt_required()
+def get_child_leaderboard_entry(child_id):
+    return leaderboard_ctrl.get_child_leaderboard_entry(child_id)
