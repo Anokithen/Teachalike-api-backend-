@@ -100,3 +100,24 @@ def delete_account_asset_refs(asset_refs, config, logger):
         raise RuntimeError(
             "Some external account assets could not be deleted. Cleanup will need to be retried."
         )
+
+
+def _cleanup_in_background(app, asset_refs):
+    with app.app_context():
+        try:
+            delete_account_asset_refs(asset_refs, current_app.config, current_app.logger)
+        except RuntimeError:
+            current_app.logger.exception("Background account asset cleanup did not finish")
+
+
+def schedule_account_asset_cleanup(asset_refs):
+    """Queue external cleanup without blocking the account deletion request."""
+    if not any(asset_refs.values()):
+        return
+    app = current_app._get_current_object()
+    try:
+        ACCOUNT_CLEANUP_EXECUTOR.submit(_cleanup_in_background, app, asset_refs)
+    except Exception:
+        # The database deletion has already committed by the time this runs.
+        # Never turn that successful deletion into a misleading 500 response.
+        current_app.logger.exception("Could not queue background account asset cleanup")
