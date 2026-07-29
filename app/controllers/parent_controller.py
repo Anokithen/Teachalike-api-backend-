@@ -121,3 +121,40 @@ def update_me():
     except Exception:
         db.session.rollback()
         return jsonify({"error": "An internal server error occurred."}), 500
+
+
+def upload_profile_image_for_current_user():
+    from app.controllers.asset_controller import upload_user_profile_image
+
+    return upload_user_profile_image(legacy_response=True)
+
+
+def delete_profile_image_for_current_user():
+    from app.controllers.asset_controller import delete_user_profile_image_legacy
+
+    return delete_user_profile_image_legacy()
+
+
+def delete_me():
+    data = request.get_json(silent=True) or {}
+    password_attempt_key, error_response, status = _verify_account_password(
+        data, "account-delete"
+    )
+    if error_response:
+        return (
+            error_response
+            if status is None
+            else (error_response, status)
+        )
+
+    parent = current_user
+    try:
+        asset_refs = collect_account_asset_refs(parent)
+        db.session.delete(parent)  # cascades to children & voice_profiles
+        db.session.commit()
+        account_password_attempts.reset(password_attempt_key)
+        schedule_account_asset_cleanup(asset_refs)
+        return jsonify({"message": "Account deleted successfully. External asset cleanup is in progress."}), 202
+    except Exception:
+        db.session.rollback()
+        return jsonify({"error": "An internal server error occurred."}), 500
