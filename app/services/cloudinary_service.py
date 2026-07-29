@@ -139,3 +139,152 @@ def _has_expected_signature(file, media_type, extension):
     if extension in {"m4a", "mp4"}:
         return len(signature) >= 12 and signature[4:8] == b"ftyp"
     return False
+
+
+def book_narration_public_id(
+    owner_id,
+    owner_name,
+    book_id,
+    book_title,
+    voice_profile_id,
+    generation_id,
+):
+    """Return a collision-safe canonical public ID for one narration generation.
+
+    ``owner_name`` remains in the signature only for compatibility with older
+    callers. Names never determine ownership or uniqueness.
+    """
+    del owner_name
+    folder = get_generated_book_audio_folder(owner_id, book_id, book_title)
+    return f"{folder}/voice_{int(voice_profile_id)}_{int(book_id)}_{int(generation_id)}"
+
+
+def _cloudinary_modules():
+    """Load Cloudinary only when a Cloudinary-backed operation is used.
+
+    Cloudinary is an optional integration for the API's core routes. Keeping
+    the import here allows the application to boot (and serve books,
+    accounts, and reading sessions) when that integration is not installed or
+    configured.
+    """
+    try:
+        import cloudinary
+        import cloudinary.api
+        import cloudinary.exceptions
+        import cloudinary.uploader
+        import cloudinary.utils
+    except ImportError as exc:
+        raise RuntimeError(
+            "Cloudinary support is not installed. Install the cloudinary package."
+        ) from exc
+    return cloudinary
+
+
+def configure_cloudinary(config):
+    """Configure the SDK or raise a sanitized configuration error."""
+    cloudinary = _cloudinary_modules()
+    values = {
+        "cloud_name": config.get("CLOUDINARY_CLOUD_NAME"),
+        "api_key": config.get("CLOUDINARY_API_KEY"),
+        "api_secret": config.get("CLOUDINARY_API_SECRET"),
+    }
+    if not all(values.values()):
+        raise CloudinaryServiceError(
+            "Cloudinary is not configured. Set CLOUDINARY_CLOUD_NAME, "
+            "CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET on the API server."
+        )
+    cloudinary.config(**values, secure=True)
+    return cloudinary
+
+
+def _operation_config(config=None):
+    if config is not None:
+        return config
+    return current_app.config if has_app_context() else {}
+
+
+def _log_storage_failure(operation, public_id=None):
+    if not has_app_context():
+        return
+    current_app.logger.error(
+        "Cloudinary %s failed%s",
+        operation,
+        f" for public_id={public_id}" if public_id else "",
+    )
+
+
+def upload_asset(
+    file,
+    asset_folder,
+    resource_type="auto",
+    public_id=None,
+    overwrite=False,
+    delivery_type="upload",
+    tags=None,
+    context=None,
+    config=None,
+    **upload_options,
+):
+    """Upload an asset and return a normalized metadata dictionary.
+
+    Asset routes use one common contract for images, video, and authenticated
+    audio. Keeping the SDK call here also ensures provider errors never leak
+    credentials or implementation details through an HTTP response.
+    """
+    try:
+        operation_config = _operation_config(config)
+        cloudinary = configure_cloudinary(operation_config)
+        upload_kwargs = {
+            "resource_type": resource_type,
+            "asset_folder": asset_folder,
+            "overwrite": overwrite,
+            "type": delivery_type,
+            "timeout": int(
+                operation_config.get("CLOUDINARY_UPLOAD_TIMEOUT_SECONDS", 180)
+            ),
+            **upload_options,
+        }
+        if public_id:
+            upload_kwargs["public_id"] = public_id
+        if tags:
+            upload_kwargs["tags"] = list(tags)
+        if context:
+            upload_kwargs["context"] = dict(context)
+        if overwrite:
+            upload_kwargs["invalidate"] = True
+        result = cloudinary.uploader.upload(file, **upload_kwargs)
+    except Exception as exc:
+        if isinstance(exc, CloudinaryServiceError):
+            raise
+        _log_storage_failure("upload", public_id)
+        raise CloudinaryUploadError("Cloudinary upload failed.") from exc
+
+    metadata = {
+        "asset_id": result.get("asset_id") or result.get("public_id"),
+        "public_id": result.get("public_id"),
+        "secure_url": result.get("secure_url"),
+        "resource_type": result.get("resource_type") or resource_type,
+        "delivery_type": result.get("type") or result.get("delivery_type") or delivery_type,
+        "format": result.get("format"),
+        "bytes": result.get("bytes"),
+        "width": result.get("width"),
+        "height": result.get("height"),
+        "duration": result.get("duration"),
+        "asset_folder": result.get("asset_folder") or asset_folder,
+        "original_filename": result.get("original_filename") or getattr(file, "filename", None),
+    }
+    if not metadata["public_id"] or not metadata["secure_url"]:
+        raise CloudinaryUploadError("Cloudinary upload returned incomplete metadata.")
+    return metadata
+
+
+def replace_asset(file, asset_folder, resource_type, public_id, **kwargs):
+    """Replace a deterministic Cloudinary asset and invalidate cached bytes."""
+    return upload_asset(
+        file,
+        asset_folder,
+        resource_type=resource_type,
+        public_id=public_id,
+        overwrite=True,
+        **kwargs,
+    )
