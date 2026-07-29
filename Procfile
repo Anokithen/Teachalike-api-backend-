@@ -1,1 +1,1 @@
-web: exec gunicorn --bind 0.0.0.0:$PORT --threads 4 --timeout ${GUNICORN_TIMEOUT:-300} --access-logfile - --error-logfile - run:app
+web: exec gunicorn --bind [::]:$PORT --workers ${WEB_CONCURRENCY:-1} --threads ${GUNICORN_THREADS:-4} --timeout ${GUNICORN_TIMEOUT:-300} --graceful-timeout 30 --keep-alive 5 --access-logfile - --error-logfile - run:app

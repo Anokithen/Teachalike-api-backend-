@@ -8,13 +8,18 @@ from unittest.mock import patch
 from flask import Flask
 from sqlalchemy import text
 
-from app import _validate_deployment_config, create_app
+from app import (
+    _should_initialize_database,
+    _validate_deployment_config,
+    create_app,
+)
 from app.config import (
     Config,
     _build_database_uri,
     _database_is_configured,
     _is_railway_environment,
     _missing_database_env_vars,
+    _uses_railway_public_database_proxy,
 )
 from app.extensions import db
 
@@ -111,6 +116,21 @@ class DatabaseConfigTests(unittest.TestCase):
                         (missing_name,),
                     )
 
+    def test_railway_public_database_proxy_is_detected(self):
+        with patch.dict(
+            os.environ,
+            {"DB_HOST": "example.proxy.rlwy.net"},
+            clear=True,
+        ):
+            self.assertTrue(_uses_railway_public_database_proxy())
+
+        with patch.dict(
+            os.environ,
+            {"DB_HOST": "mysql.railway.internal"},
+            clear=True,
+        ):
+            self.assertFalse(_uses_railway_public_database_proxy())
+
 
 class DeploymentValidationTests(unittest.TestCase):
     def _app_with_valid_config(self):
@@ -118,6 +138,7 @@ class DeploymentValidationTests(unittest.TestCase):
         app.config.update(
             IS_RAILWAY=True,
             DATABASE_IS_CONFIGURED=True,
+            DATABASE_USES_RAILWAY_PUBLIC_PROXY=False,
             JWT_SECRET_KEY_IS_EPHEMERAL=False,
             JWT_SECRET_KEY="a" * 64,
             FRONTEND_ORIGINS=["https://frontend.example"],
@@ -148,6 +169,35 @@ class DeploymentValidationTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "DB_HOST"):
             _validate_deployment_config(app)
+
+    def test_public_railway_database_proxy_is_rejected(self):
+        app = self._app_with_valid_config()
+        app.config["DATABASE_USES_RAILWAY_PUBLIC_PROXY"] = True
+
+        with self.assertRaisesRegex(RuntimeError, "private networking"):
+            _validate_deployment_config(app)
+
+
+class DatabaseStartupModeTests(unittest.TestCase):
+    def _app(self, *, is_railway, auto_create_tables):
+        app = Flask(__name__)
+        app.config.update(
+            IS_RAILWAY=is_railway,
+            AUTO_CREATE_TABLES=auto_create_tables,
+        )
+        return app
+
+    def test_railway_web_worker_never_runs_schema_setup(self):
+        app = self._app(is_railway=True, auto_create_tables=True)
+        self.assertFalse(_should_initialize_database(app, None))
+
+    def test_local_development_can_create_tables_automatically(self):
+        app = self._app(is_railway=False, auto_create_tables=True)
+        self.assertTrue(_should_initialize_database(app, None))
+
+    def test_predeploy_explicitly_runs_schema_setup(self):
+        app = self._app(is_railway=True, auto_create_tables=False)
+        self.assertTrue(_should_initialize_database(app, True))
 
 
 class ReadinessTests(unittest.TestCase):

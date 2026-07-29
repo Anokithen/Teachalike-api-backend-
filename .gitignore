@@ -6,6 +6,7 @@ instance/
 .venv/
 venv/
 models/
+BOOK_GENERATION_PROVIDER=*.yaml
 # Python source models remain versioned; only downloaded ML model weights are ignored.
 !app/models/
 !app/models/*.py

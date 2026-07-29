@@ -12,7 +12,8 @@ from app.extensions import db, jwt
 from app.routes import register_blueprints
 
 
-def create_app():
+def create_app(*, initialize_database=None):
+    """Create the API app without blocking Railway web-worker startup."""
     app = Flask(__name__)
     app.config.from_object(Config)
     _validate_deployment_config(app)
@@ -73,7 +74,7 @@ def create_app():
     from app.models import Parent, RevokedToken  # noqa: F401  (this import loads app/models/__init__.py,
     # which in turn imports every model class so they register with SQLAlchemy)
 
-    if app.config["AUTO_CREATE_TABLES"]:
+    if _should_initialize_database(app, initialize_database):
         with app.app_context():
             _initialize_database_schema(app)
 
@@ -149,6 +150,16 @@ def create_app():
     return app
 
 
+def _should_initialize_database(app, initialize_database):
+    """Run schema setup locally or when the pre-deploy command requests it."""
+    if initialize_database is not None:
+        return bool(initialize_database)
+    return bool(
+        app.config["AUTO_CREATE_TABLES"]
+        and not app.config["IS_RAILWAY"]
+    )
+
+
 def _validate_deployment_config(app):
     """Reject incomplete production configuration before serving traffic."""
     if not app.config["IS_RAILWAY"]:
@@ -161,6 +172,12 @@ def _validate_deployment_config(app):
         raise RuntimeError(
             "Database configuration is missing required variable(s): "
             f"{', '.join(missing_variables)}."
+        )
+    if app.config["DATABASE_USES_RAILWAY_PUBLIC_PROXY"]:
+        raise RuntimeError(
+            "DB_HOST points to Railway's public TCP proxy. Set DB_HOST to "
+            "the MySQL service's MYSQLHOST reference so the backend uses "
+            "Railway private networking."
         )
     if app.config["JWT_SECRET_KEY_IS_EPHEMERAL"]:
         raise RuntimeError("JWT_SECRET_KEY must be set to a stable secret.")
@@ -208,6 +225,8 @@ def _initialize_database_schema(app):
             return
         except Exception as exc:
             db.session.rollback()
+            db.session.remove()
+            db.engine.dispose()
             if attempt == max_attempts:
                 raise RuntimeError(
                     "Database schema initialization failed during "

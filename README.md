@@ -23,8 +23,8 @@ Reading-session microphone recordings are converted to mono 16 kHz WAV with ffmp
 
 Deploy this repository as the backend service and add a MySQL service in the
 same Railway project. The included `Dockerfile` installs the Python
-dependencies and ffmpeg. Railway deployment health checks are disabled, so
-database readiness does not gate a deployment.
+dependencies and ffmpeg. Railway runs database preparation once in a
+pre-deploy container, then starts Gunicorn without repeating schema work.
 
 Set these variables on the backend service:
 
@@ -36,10 +36,6 @@ DB_PORT=${{MySQL.MYSQLPORT}}
 DB_USER=${{MySQL.MYSQLUSER}}
 JWT_SECRET_KEY=replace-with-a-new-random-secret-of-at-least-32-characters
 FRONTEND_ORIGINS=https://your-project.vercel.app
-AUTO_CREATE_TABLES=true
-DB_INIT_MAX_ATTEMPTS=5
-DB_INIT_RETRY_SECONDS=2
-DB_QUERY_TIMEOUT_SECONDS=30
 ```
 
 Use Railway's variable-reference autocomplete because `MySQL` must match the
@@ -49,6 +45,19 @@ using only `DB_NAME`, `DB_HOST`, `DB_PASSWORD`, `DB_PORT`, and `DB_USER`;
 directly by the backend. It creates and verifies all model tables before
 serving traffic and fails deployment with the exact initialization stage if
 the database is not ready.
+
+Keep the API and MySQL services in the same Railway project and set `DB_HOST`
+through `${{MySQL.MYSQLHOST}}`. Do not paste a `*.proxy.rlwy.net` public TCP
+proxy into `DB_HOST`; the production validator rejects that slower external
+route and directs the deployment to Railway's private network instead.
+
+`railway.toml` runs `python -m app.database_setup` once before rollout. The
+web worker deliberately skips automatic table creation on Railway, even if an
+old `AUTO_CREATE_TABLES=true` variable is still present. This keeps Gunicorn
+startup fast and prevents duplicate schema work during restarts or scaling.
+The deployment health check uses `/health`, which verifies that the HTTP
+worker is live without running a database query. `/health/ready` remains
+available when database and schema readiness must be checked explicitly.
 
 Generate a unique JWT secret, for example with `openssl rand -hex 32`. Never
 put database credentials, provider secrets, or JWT secrets in the frontend.
@@ -61,9 +70,9 @@ GET https://your-backend.up.railway.app/health
 GET https://your-backend.up.railway.app/health/ready
 ```
 
-These endpoints remain available for optional monitoring. Readiness returns
-HTTP 200 with `"database": "ready"` when the database is reachable and its
-schema is complete.
+Railway uses `/health` during deployment. Readiness returns HTTP 200 with
+`"database": "ready"` when the database is reachable and its schema is
+complete.
 
 The browser records audio, uploads it to the authenticated `/api/reading-sessions/:id/pronunciation-transcript` endpoint, and then sends the returned transcript to the existing pronunciation scoring endpoint. Recordings are deleted from the server immediately after transcription.
 

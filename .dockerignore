@@ -7,3 +7,4 @@ __pycache__/
 .gitignore
 /models/
 *.log
+BOOK_GENERATION_PROVIDER=*.yaml

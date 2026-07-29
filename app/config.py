@@ -92,6 +92,11 @@ def _database_is_configured():
     return not _missing_database_env_vars()
 
 
+def _uses_railway_public_database_proxy():
+    """Return whether DB_HOST uses Railway's slower public TCP proxy."""
+    return _env_value("DB_HOST").lower().endswith(".proxy.rlwy.net")
+
+
 def _build_database_uri():
     """Build the MySQL URI using only the five supported DB variables."""
     db_user = _env_value("DB_USER", default="root")
@@ -110,6 +115,9 @@ class Config:
     IS_RAILWAY = _is_railway_environment()
     MISSING_DATABASE_ENV_VARS = _missing_database_env_vars()
     DATABASE_IS_CONFIGURED = not MISSING_DATABASE_ENV_VARS
+    DATABASE_USES_RAILWAY_PUBLIC_PROXY = (
+        _uses_railway_public_database_proxy()
+    )
     DB_USER = _env_value("DB_USER", default="root")
     DB_PASSWORD = _env_value("DB_PASSWORD", default="root123")
     DB_HOST = _env_value("DB_HOST", default="localhost")
@@ -162,9 +170,11 @@ class Config:
         if _trusted_hosts
         else None
     )
-    AUTO_CREATE_TABLES = _boolean_env("AUTO_CREATE_TABLES", True)
-    DB_INIT_MAX_ATTEMPTS = _positive_int_env("DB_INIT_MAX_ATTEMPTS", 5)
-    DB_INIT_RETRY_SECONDS = _nonnegative_float_env("DB_INIT_RETRY_SECONDS", 2)
+    # Railway runs schema setup once through its pre-deploy command. Local
+    # development keeps automatic table creation for a convenient first run.
+    AUTO_CREATE_TABLES = _boolean_env("AUTO_CREATE_TABLES", not IS_RAILWAY)
+    DB_INIT_MAX_ATTEMPTS = _positive_int_env("DB_INIT_MAX_ATTEMPTS", 3)
+    DB_INIT_RETRY_SECONDS = _nonnegative_float_env("DB_INIT_RETRY_SECONDS", 1)
 
     CLOUDINARY_CLOUD_NAME = _env_value("CLOUDINARY_CLOUD_NAME")
     CLOUDINARY_API_KEY = _env_value("CLOUDINARY_API_KEY")
