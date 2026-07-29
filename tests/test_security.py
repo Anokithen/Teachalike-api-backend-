@@ -280,3 +280,140 @@ class SecurityTests(unittest.TestCase):
         )
         self.assertEqual(deleted.status_code, 202, deleted.json)
         self.assertIsNone(db.session.get(Parent, self.parent.id))
+
+    def test_pin_rate_limit_blocks_brute_force(self):
+        child = Child(
+            parent_id=self.parent.id,
+            created_by_id=self.parent.id,
+            name="Child",
+            age=8,
+        )
+        child.set_pin("123456")
+        db.session.add(child)
+        db.session.commit()
+        headers = self._headers(self.parent)
+        key = f"pin:{self.parent.id}:{child.id}"
+        try:
+            for _ in range(2):
+                response = self._post(
+                    f"/api/children/{child.id}/verify-pin",
+                    headers=headers,
+                    json={"pin": "000000"},
+                )
+                self.assertEqual(response.status_code, 401)
+            blocked = self._post(
+                f"/api/children/{child.id}/verify-pin",
+                headers=headers,
+                json={"pin": "123456"},
+            )
+            self.assertEqual(blocked.status_code, 429)
+        finally:
+            pin_attempts.reset(key)
+
+    def test_cross_account_and_admin_routes_are_isolated(self):
+        child = Child(
+            parent_id=self.parent.id,
+            created_by_id=self.parent.id,
+            name="Private Child",
+            age=8,
+        )
+        db.session.add(child)
+        db.session.commit()
+
+        hidden = self.client.get(
+            f"/api/children/{child.id}",
+            headers=self._headers(self.other),
+        )
+        self.assertEqual(hidden.status_code, 404)
+
+        forbidden = self.client.get(
+            "/api/admin/parents",
+            headers=self._headers(self.parent),
+        )
+        self.assertEqual(forbidden.status_code, 403)
+
+    def test_malformed_teacher_parent_id_is_rejected(self):
+        teacher = Parent(
+            name="Teacher",
+            email="teacher@example.com",
+            role=ROLE_TEACHER,
+        )
+        teacher.set_password("SecurePass123!")
+        db.session.add(teacher)
+        db.session.commit()
+
+        response = self._post(
+            "/api/children",
+            headers=self._headers(teacher),
+            json={
+                "name": "Child",
+                "age": 8,
+                "parent_id": {},
+            },
+        )
+        self.assertEqual(response.status_code, 400, response.json)
+
+    def test_invalid_and_oversized_json_are_rejected(self):
+        invalid_shape = self._post(
+            "/api/auth/register",
+            data="[]",
+            content_type="application/json",
+        )
+        self.assertEqual(invalid_shape.status_code, 400)
+
+        previous_limit = self.app.config["MAX_JSON_BODY_SIZE_BYTES"]
+        self.app.config["MAX_JSON_BODY_SIZE_BYTES"] = 20
+        try:
+            oversized = self._post(
+                "/api/auth/register",
+                data=json.dumps({"name": "x" * 30}),
+                content_type="application/json",
+            )
+            self.assertEqual(oversized.status_code, 413)
+        finally:
+            self.app.config["MAX_JSON_BODY_SIZE_BYTES"] = previous_limit
+
+    def test_admin_book_urls_reject_unsafe_schemes(self):
+        for unsafe_url in ("javascript:alert(1)", "http://evil.example/cover.jpg"):
+            with self.subTest(unsafe_url=unsafe_url):
+                response = self._post(
+                    "/api/admin/books",
+                    headers=self._headers(self.admin),
+                    json={
+                        "title": "Unsafe",
+                        "age_group": "7-9",
+                        "reading_level": "beginner",
+                        "cover_image_url": unsafe_url,
+                    },
+                )
+                self.assertEqual(response.status_code, 400)
+
+    def test_custom_games_cannot_submit_unbounded_scores(self):
+        child = Child(
+            parent_id=self.parent.id,
+            created_by_id=self.parent.id,
+            name="Player",
+            age=8,
+        )
+        book = Book(title="Book", age_group="7-9", reading_level="beginner")
+        db.session.add_all([child, book])
+        db.session.flush()
+        game = MiniGame(
+            book_id=book.id,
+            game_type="custom",
+            difficulty="easy",
+            content={},
+        )
+        db.session.add(game)
+        db.session.commit()
+
+        response = self._post(
+            f"/api/mini-games/{game.id}/results",
+            headers=self._headers(self.parent),
+            json={"child_id": child.id, "score": 1000000},
+        )
+        self.assertEqual(response.status_code, 400)
+
+
+if __name__ == "__main__":
+    unittest.main()
