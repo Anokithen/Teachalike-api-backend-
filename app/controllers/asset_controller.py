@@ -187,3 +187,147 @@ def _save_profile(upload, category, folder, owner_id, child=None):
                     existing.id,
                 )
     return asset
+
+
+def upload_user_profile_image(legacy_response=False):
+    """Upload or replace the authenticated account's profile image."""
+    upload, error = _validated_file(USER_PROFILE_IMAGE, "image")
+    if error:
+        return _legacy_error(error) if legacy_response else error
+    try:
+        asset = _save_profile(
+            upload,
+            USER_PROFILE_IMAGE,
+            get_user_profile_folder(current_user.id),
+            current_user.id,
+        )
+        if legacy_response:
+            return jsonify({
+                "message": "Profile image updated successfully.",
+                "parent": current_user.to_dict(),
+            }), 200
+        return _response("Profile image uploaded.", asset.to_dict(), 201)
+    except CloudinaryServiceError:
+        if legacy_response:
+            return jsonify({"error": "Profile image upload failed."}), 503
+        return _error("Profile image upload failed.", 503)
+    except SQLAlchemyError:
+        if legacy_response:
+            return jsonify({"error": "Profile image metadata could not be saved."}), 500
+        return _error("Profile image metadata could not be saved.", 500)
+
+
+def upload_child_profile_image(child_id, legacy_response=False):
+    """Upload or replace a profile image for a managed child."""
+    child = db.session.get(Child, child_id)
+    if child is None:
+        result = _error("Child not found.", 404)
+        return _legacy_error(result) if legacy_response else result
+    if not can_access_child(child):
+        result = _error("You cannot manage this child.", 403)
+        return _legacy_error(result) if legacy_response else result
+    upload, error = _validated_file(CHILD_PROFILE_IMAGE, "image")
+    if error:
+        return _legacy_error(error) if legacy_response else error
+    try:
+        asset = _save_profile(
+            upload,
+            CHILD_PROFILE_IMAGE,
+            get_child_profile_folder(current_user.id, child.id, child.name),
+            current_user.id,
+            child,
+        )
+        if legacy_response:
+            return jsonify({
+                "message": "Child profile image updated successfully.",
+                "child": child.to_dict(),
+            }), 200
+        return _response("Child profile image uploaded.", asset.to_dict(), 201)
+    except CloudinaryServiceError:
+        if legacy_response:
+            return jsonify({"error": "Child profile image upload failed."}), 503
+        return _error("Child profile image upload failed.", 503)
+    except SQLAlchemyError:
+        if legacy_response:
+            return jsonify({"error": "Child profile metadata could not be saved."}), 500
+        return _error("Child profile metadata could not be saved.", 500)
+
+
+def delete_user_profile_image_legacy():
+    """Remove the current profile image through the asset ledger when present."""
+    asset = Asset.query.filter_by(
+        owner_user_id=current_user.id,
+        asset_category=USER_PROFILE_IMAGE,
+        deleted_at=None,
+    ).order_by(Asset.id.desc()).first()
+    if asset:
+        result = delete_stored_asset(asset.id)
+        response, status = result
+        if status >= 400:
+            return _legacy_error(result)
+        return jsonify({
+            "message": "Profile image removed.",
+            "parent": current_user.to_dict(),
+        }), 200
+
+    public_id = current_user.profile_image_public_id
+    try:
+        if public_id:
+            delete_asset(public_id, "image", "upload")
+        current_user.profile_image_url = None
+        current_user.profile_image_public_id = None
+        db.session.commit()
+        return jsonify({
+            "message": "Profile image removed.",
+            "parent": current_user.to_dict(),
+        }), 200
+    except CloudinaryServiceError:
+        return jsonify({"error": "Profile image removal failed."}), 503
+    except SQLAlchemyError:
+        db.session.rollback()
+        return jsonify({"error": "Profile image removal failed."}), 500
+
+
+def delete_child_profile_image_legacy(child_id):
+    """Remove a managed child's image while preserving the legacy response."""
+    child = db.session.get(Child, child_id)
+    if child is None or not can_access_child(child):
+        return jsonify({"error": "Child not found."}), 404
+    asset = Asset.query.filter_by(
+        child_id=child.id,
+        asset_category=CHILD_PROFILE_IMAGE,
+        deleted_at=None,
+    ).order_by(Asset.id.desc()).first()
+    if asset:
+        result = delete_stored_asset(asset.id)
+        response, status = result
+        if status >= 400:
+            return _legacy_error(result)
+        return jsonify({
+            "message": "Child profile image removed.",
+            "child": child.to_dict(),
+        }), 200
+
+    public_id = child.profile_image_public_id
+    try:
+        if public_id:
+            delete_asset(public_id, "image", "upload")
+        child.profile_image_url = None
+        child.profile_image_public_id = None
+        db.session.commit()
+        return jsonify({
+            "message": "Child profile image removed.",
+            "child": child.to_dict(),
+        }), 200
+    except CloudinaryServiceError:
+        return jsonify({"error": "Profile image removal failed."}), 503
+    except SQLAlchemyError:
+        db.session.rollback()
+        return jsonify({"error": "Profile image removal failed."}), 500
+
+
+def upload_voice_profile():
+    """Create a cloned voice through the shared legacy-compatible workflow."""
+    from app.controllers.voice_profile_controller import create_voice_profile
+
+    return create_voice_profile(asset_response=True)
