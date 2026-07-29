@@ -51,3 +51,73 @@ def _verify_account_password(data, action):
 
 def get_me():
     return jsonify({"parent": current_user.to_dict()}), 200
+
+
+def update_me():
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "Request body is required."}), 400
+
+    errors = []
+    parent = current_user
+
+    if "name" in data:
+        name, error = validate_name(data.get("name"))
+        if error:
+            errors.append(error.replace("is required", "cannot be empty"))
+        else:
+            data["name"] = name
+
+    if "email" in data:
+        email, error = validate_account_email(data.get("email"))
+        if error:
+            errors.append(error.replace("is required", "cannot be empty"))
+        else:
+            data["email"] = email
+            existing = Parent.query.filter_by(email=email).first()
+            if existing and existing.id != parent.id:
+                errors.append("An account with this email already exists.")
+
+    if "password" in data:
+        password, error = validate_password(data.get("password"))
+        if error:
+            errors.append(error)
+        else:
+            data["password"] = password
+
+    sensitive_change = "password" in data or (
+        "email" in data and data.get("email") != parent.email
+    )
+    password_attempt_key = None
+    if not errors and sensitive_change:
+        password_attempt_key, error_response, status = (
+            _verify_account_password(data, "profile-update")
+        )
+        if error_response:
+            return (
+                error_response
+                if status is None
+                else (error_response, status)
+            )
+
+    if errors:
+        return jsonify({"errors": errors}), 400
+
+    try:
+        if "name" in data:
+            parent.name = str(data.get("name")).strip()
+        if "email" in data:
+            parent.email = data.get("email")
+        if "password" in data:
+            parent.set_password(str(data.get("password")))
+
+        db.session.commit()
+        if password_attempt_key:
+            account_password_attempts.reset(password_attempt_key)
+        return jsonify({"message": "Profile updated successfully.", "parent": parent.to_dict()}), 200
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify({"error": "An account with this email already exists."}), 409
+    except Exception:
+        db.session.rollback()
+        return jsonify({"error": "An internal server error occurred."}), 500
