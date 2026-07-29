@@ -1,3 +1,5 @@
+import time
+
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from werkzeug.exceptions import RequestEntityTooLarge
@@ -72,15 +74,7 @@ def create_app():
 
     if app.config["AUTO_CREATE_TABLES"]:
         with app.app_context():
-            try:
-                db.create_all()
-                _ensure_voice_profile_schema()
-                _ensure_profile_image_schema()
-                _ensure_book_schema()
-                _ensure_book_narration_schema()
-            except Exception as exc:  # pragma: no cover - startup diagnostics only
-                db.session.rollback()
-                app.logger.error("Could not initialize database tables: %s", exc)
+            _initialize_database_schema(app)
 
     @jwt.user_lookup_loader
     def user_lookup_callback(_jwt_header, jwt_data):
@@ -142,6 +136,57 @@ def create_app():
         return jsonify({"error": f"The uploaded file must be smaller than {limit_mb} MB."}), 413
 
     return app
+
+
+def _initialize_database_schema(app):
+    """Create all model tables, retrying transient database failures."""
+    max_attempts = app.config["DB_INIT_MAX_ATTEMPTS"]
+    retry_seconds = app.config["DB_INIT_RETRY_SECONDS"]
+
+    for attempt in range(1, max_attempts + 1):
+        stage = "database connection"
+        try:
+            db.session.execute(text("SELECT 1"))
+            stage = "model table creation"
+            db.create_all()
+            stage = "voice profile schema compatibility"
+            _ensure_voice_profile_schema()
+            stage = "profile image schema compatibility"
+            _ensure_profile_image_schema()
+            stage = "book schema compatibility"
+            _ensure_book_schema()
+            stage = "book narration schema compatibility"
+            _ensure_book_narration_schema()
+            stage = "schema verification"
+            existing_tables = set(inspect(db.engine).get_table_names())
+            expected_tables = set(db.metadata.tables)
+            missing_tables = sorted(expected_tables - existing_tables)
+            if missing_tables:
+                raise RuntimeError(
+                    "Required tables were not created: " + ", ".join(missing_tables)
+                )
+            app.logger.info(
+                "Database schema initialized successfully with %s tables.",
+                len(expected_tables),
+            )
+            return
+        except Exception as exc:
+            db.session.rollback()
+            if attempt == max_attempts:
+                raise RuntimeError(
+                    "Database schema initialization failed during "
+                    f"{stage} after {max_attempts} attempt(s)."
+                ) from exc
+            app.logger.warning(
+                "Database initialization attempt %s/%s failed during %s; "
+                "retrying in %ss: %s",
+                attempt,
+                max_attempts,
+                stage,
+                retry_seconds,
+                exc,
+            )
+            time.sleep(retry_seconds)
 
 
 def _ensure_voice_profile_schema():

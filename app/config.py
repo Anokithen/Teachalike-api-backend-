@@ -35,6 +35,18 @@ def _positive_int_env(name, default):
     return value
 
 
+def _nonnegative_float_env(name, default):
+    """Read a non-negative numeric setting with a clear startup error."""
+    raw_value = _env_value(name, default=str(default))
+    try:
+        value = float(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a non-negative number.") from exc
+    if value < 0:
+        raise ValueError(f"{name} must be a non-negative number.")
+    return value
+
+
 def _boolean_env(name, default):
     """Read a conventional true/false environment setting."""
     raw_value = _env_value(name, default="true" if default else "false").lower()
@@ -68,10 +80,18 @@ class Config:
 
     SQLALCHEMY_DATABASE_URI = _build_database_uri()
     SQLALCHEMY_TRACK_MODIFICATIONS = False
+    DB_QUERY_TIMEOUT_SECONDS = _positive_int_env(
+        "DB_QUERY_TIMEOUT_SECONDS",
+        30,
+    )
     SQLALCHEMY_ENGINE_OPTIONS = {
         "pool_pre_ping": True,
         "pool_recycle": 280,
-        "connect_args": {"connect_timeout": 5},
+        "connect_args": {
+            "connect_timeout": 5,
+            "read_timeout": DB_QUERY_TIMEOUT_SECONDS,
+            "write_timeout": DB_QUERY_TIMEOUT_SECONDS,
+        },
     }
 
     JWT_SECRET_KEY = (
@@ -105,6 +125,8 @@ class Config:
         else None
     )
     AUTO_CREATE_TABLES = _boolean_env("AUTO_CREATE_TABLES", True)
+    DB_INIT_MAX_ATTEMPTS = _positive_int_env("DB_INIT_MAX_ATTEMPTS", 5)
+    DB_INIT_RETRY_SECONDS = _nonnegative_float_env("DB_INIT_RETRY_SECONDS", 2)
 
     CLOUDINARY_CLOUD_NAME = _env_value("CLOUDINARY_CLOUD_NAME")
     CLOUDINARY_API_KEY = _env_value("CLOUDINARY_API_KEY")
