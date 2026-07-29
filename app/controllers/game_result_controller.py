@@ -48,3 +48,64 @@ def _maximum_game_score(game):
     ):
         return configured_maximum
     return 100
+
+
+def submit_game_result(game_id):
+    game = db.session.get(MiniGame, game_id)
+    if not game:
+        return jsonify({"error": "Mini-game not found."}), 404
+
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "Request body is required."}), 400
+
+    errors = []
+    child_id = data.get("child_id")
+    if isinstance(child_id, bool) or not isinstance(child_id, (int, str)):
+        child = None
+    else:
+        try:
+            child_id = int(child_id)
+        except (TypeError, ValueError):
+            child = None
+        else:
+            child = db.session.get(Child, child_id) if child_id > 0 else None
+    if not child_id or not child_belongs_to_current_parent(child):
+        errors.append("A valid child_id belonging to this account is required.")
+
+    score = data.get("score")
+    if score is None:
+        errors.append("score is required.")
+    else:
+        try:
+            if isinstance(score, bool) or isinstance(score, float) and not score.is_integer():
+                raise ValueError
+            score = int(score)
+            if score < 0:
+                errors.append("score cannot be negative.")
+        except (TypeError, ValueError):
+            errors.append("score must be a whole number.")
+
+    if errors:
+        return jsonify({"errors": errors}), 400
+
+    maximum_score = _maximum_game_score(game)
+    if maximum_score is not None and score > maximum_score:
+        return jsonify({"error": f"score cannot be greater than {maximum_score}."}), 400
+
+    try:
+        result = GameResult(
+            child_id=child_id,
+            game_id=game_id,
+            score=score,
+            completed_at=utc_now(),
+        )
+        db.session.add(result)
+        _award_leaderboard_points(child_id, score)
+        db.session.commit()
+        return jsonify(
+            {"message": "Game result submitted.", "game_result": result.to_dict()}
+        ), 201
+    except Exception:
+        db.session.rollback()
+        return jsonify({"error": "An internal server error occurred."}), 500
