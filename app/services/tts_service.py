@@ -134,3 +134,57 @@ def _combine_wav_files(paths, destination):
                 output.writeframes(frame_data)
     except (wave.Error, OSError) as exc:
         raise TTSError("XTTS generated audio that could not be combined.") from exc
+
+
+def _synthesize_chunk(model, chunk, reference_wav, chunk_path, config):
+    """Synthesize one chunk with native cloning or Coqui's VC helper."""
+    method = str(config.get("TTS_VOICE_CLONING_METHOD", "native")).lower()
+    if method == "vc":
+        # This is Coqui's equivalent of:
+        # tts.tts_with_vc_to_file(text, speaker_wav="speaker.wav", file_path="output.wav")
+        # It lets a standard TTS model speak first, then converts it to the
+        # uploaded Cloudinary reference voice.
+        model.tts_with_vc_to_file(
+            text=chunk,
+            speaker_wav=str(reference_wav),
+            file_path=str(chunk_path),
+        )
+        return
+    if method != "native":
+        raise TTSError("TTS_VOICE_CLONING_METHOD must be either 'native' or 'vc'.")
+    model.tts_to_file(
+        text=chunk,
+        speaker_wav=str(reference_wav),
+        language=config.get("TTS_LANGUAGE", "en"),
+        file_path=str(chunk_path),
+    )
+
+
+def synthesize_narration(text, reference_voice_url, output_path, config):
+    """Generate a WAV narration using a signed Cloudinary reference-audio URL."""
+    chunks = split_text_into_chunks(text, int(config.get("TTS_MAX_CHARS_PER_CHUNK", 280)))
+    if not chunks:
+        raise TTSError("This book has no text available for narration.")
+
+    with tempfile.TemporaryDirectory(prefix="teachalike-xtts-") as temp_dir:
+        temp_path = Path(temp_dir)
+        downloaded_voice = temp_path / "reference-audio"
+        reference_wav = temp_path / "reference.wav"
+        _download_reference_voice(reference_voice_url, downloaded_voice)
+        _to_wav(downloaded_voice, reference_wav)
+        model = _load_model(
+            config.get("TTS_MODEL_NAME"),
+            config.get("TTS_DEVICE", "cpu"),
+            config.get("TTS_CACHE_DIR"),
+        )
+        chunk_paths = []
+        try:
+            for index, chunk in enumerate(chunks):
+                chunk_path = temp_path / f"chunk-{index}.wav"
+                _synthesize_chunk(model, chunk, reference_wav, chunk_path, config)
+                chunk_paths.append(chunk_path)
+            _combine_wav_files(chunk_paths, output_path)
+        except TTSError:
+            raise
+        except Exception as exc:
+            raise TTSError("Coqui could not generate this narration. Try a clearer voice sample, compatible model, or shorter book.") from exc
