@@ -109,3 +109,16 @@ def submit_game_result(game_id):
     except Exception:
         db.session.rollback()
         return jsonify({"error": "An internal server error occurred."}), 500
+
+
+def list_child_game_results(child_id):
+    child = db.session.get(Child, child_id)
+    if not child_belongs_to_current_parent(child):
+        return jsonify({"error": "Child not found."}), 404
+
+    results = (
+        GameResult.query.filter_by(child_id=child_id)
+        .order_by(GameResult.completed_at.desc())
+        .all()
+    )
+    return jsonify({"game_results": [r.to_dict() for r in results]}), 200
