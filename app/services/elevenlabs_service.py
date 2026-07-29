@@ -65,3 +65,57 @@ def _voice_name(profile_label, owner_name, profile_id=None):
     base_name = label or f"{owner} voice"
     value = re.sub(r"\s+", " ", f"{base_name}{suffix}").strip()
     return value[:80] or "TeachAlike voice"
+
+
+def _clone_files(file_obj, filename, mimetype, config, name, description):
+    """Create an IVC voice from one uploaded or downloaded audio sample."""
+    response = _request(
+        "POST",
+        f"{API_BASE_URL}/voices/add",
+        "clone this voice",
+        headers={"xi-api-key": _api_key(config)},
+        data={
+            "name": name,
+            "description": description[:1000],
+            "remove_background_noise": "false",
+        },
+        files={"files": (filename or "voice-sample.wav", file_obj, mimetype or "audio/wav")},
+        timeout=int(config.get("ELEVENLABS_REQUEST_TIMEOUT", 120)),
+    )
+    _raise_for_api_error(response, "clone this voice")
+    try:
+        voice_id = response.json().get("voice_id")
+    except ValueError as exc:
+        raise ElevenLabsError("ElevenLabs returned an invalid voice-clone response.") from exc
+    if not voice_id:
+        raise ElevenLabsError("ElevenLabs did not return a voice ID for this recording.")
+    return voice_id
+
+
+def clone_voice(file_obj, filename, mimetype, config, profile_label=None, owner_name=None, profile_id=None):
+    name = _voice_name(profile_label, owner_name, profile_id)
+    description = (
+        "A voice profile created by its owner in TeachAlike. "
+        "Use only with the owner's permission."
+    )
+    return _clone_files(file_obj, filename, mimetype, config, name, description)
+
+
+def clone_voice_from_url(reference_url, config, profile_label=None, owner_name=None, profile_id=None):
+    """Clone a legacy TeachAlike voice profile that has no ElevenLabs ID yet."""
+    if not reference_url:
+        raise ElevenLabsError("The voice profile has no source recording available.")
+    try:
+        response = requests.get(reference_url, timeout=60)
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise ElevenLabsError("The private voice recording could not be downloaded.") from exc
+    return clone_voice(
+        response.content,
+        "legacy-voice-sample",
+        response.headers.get("Content-Type", "audio/wav"),
+        config,
+        profile_label,
+        owner_name,
+        profile_id,
+    )
