@@ -1,0 +1,89 @@
+from flask import current_app, jsonify, request
+from flask_jwt_extended import current_user
+
+from app.extensions import db
+from app.models.child_model import Child
+from app.models.parent_model import Parent, ROLE_PARENT
+from app.middleware import can_access_child
+from app.security import pin_attempts
+from app.validators import MAX_NAME_LENGTH
+
+
+VALID_GENDERS = {"male", "female", "other", "prefer_not_to_say"}
+VALID_READING_LEVELS = {"beginner", "intermediate", "advanced"}
+
+
+def _validate_child_payload(data, partial=False):
+    errors = []
+    if not data:
+        return ["Request body is required."]
+
+    if "name" in data or not partial:
+        name = data.get("name")
+        if name is None or str(name).strip() == "":
+            errors.append("name is required.")
+        elif len(str(name).strip()) > MAX_NAME_LENGTH:
+            errors.append(f"name must be {MAX_NAME_LENGTH} characters or fewer.")
+
+    if "age" in data or not partial:
+        age = data.get("age")
+        if age is None:
+            errors.append("age is required.")
+        else:
+            try:
+                if isinstance(age, bool) or isinstance(age, float) and not age.is_integer():
+                    raise ValueError
+                age_int = int(age)
+                if age_int <= 0 or age_int > 18:
+                    errors.append("age must be a realistic value between 1 and 18.")
+            except (TypeError, ValueError):
+                errors.append("age must be a whole number.")
+
+    if "reading_level" in data:
+        reading_level = str(data.get("reading_level") or "").strip().lower()
+        if reading_level not in VALID_READING_LEVELS:
+            errors.append("reading_level must be beginner, intermediate, or advanced.")
+
+    if "gender" in data and data.get("gender") not in VALID_GENDERS:
+        errors.append("gender must be male, female, other, or prefer_not_to_say.")
+
+    if "child_pin" in data and data.get("child_pin") is not None:
+        pin = str(data.get("child_pin"))
+        if pin and (len(pin) != 6 or not pin.isdigit()):
+            errors.append("child_pin must contain exactly six digits.")
+
+    return errors
+
+
+def _resolve_owning_parent(data):
+    """Figures out which parent account a new child should belong to.
+
+    - A parent account always creates children for themself.
+    - A teacher account must supply `parent_id`, referencing an existing,
+      non-banned parent account.
+    Returns (parent_id, errors).
+    """
+    if current_user.role == ROLE_PARENT:
+        return current_user.id, []
+
+    # Teacher (or any other non-parent role permitted to reach this function)
+    parent_id = data.get("parent_id") if data else None
+    if not parent_id:
+        return None, ["parent_id is required when a teacher adds a child."]
+
+    if isinstance(parent_id, bool) or not isinstance(parent_id, (int, str)):
+        return None, ["parent_id must reference an existing parent account."]
+    try:
+        parent_id = int(parent_id)
+    except (TypeError, ValueError):
+        return None, ["parent_id must reference an existing parent account."]
+    if parent_id <= 0:
+        return None, ["parent_id must reference an existing parent account."]
+
+    owning_parent = db.session.get(Parent, parent_id)
+    if not owning_parent or owning_parent.role != ROLE_PARENT:
+        return None, ["parent_id must reference an existing parent account."]
+    if owning_parent.is_banned:
+        return None, ["This parent account has been banned and cannot have children added."]
+
+    return owning_parent.id, []
