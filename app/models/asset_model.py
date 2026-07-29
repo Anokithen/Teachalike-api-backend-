@@ -110,3 +110,27 @@ class Asset(db.Model):
             status=status,
             **relations,
         )
+
+    def to_dict(self) -> dict:
+        """Return the safe, client-facing representation."""
+        return {
+            "id": self.id,
+            "owner_user_id": self.owner_user_id,
+            "child_id": self.child_id,
+            "book_id": self.book_id,
+            "admin_id": self.admin_id,
+            "voice_profile_id": self.voice_profile_id,
+            "generation_id": self.generation_id,
+            "asset_category": self.asset_category,
+            "url": self.cloudinary_secure_url,
+            "resource_type": self.cloudinary_resource_type,
+            "format": self.cloudinary_format,
+            "original_filename": self.original_filename,
+            "file_size_bytes": self.file_size_bytes,
+            "width": self.width,
+            "height": self.height,
+            "duration_seconds": self.duration_seconds,
+            "status": self.status,
+            "created_at": utc_isoformat(self.created_at),
+            "updated_at": utc_isoformat(self.updated_at),
+        }
