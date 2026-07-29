@@ -437,3 +437,156 @@ def delete_authenticated_audio(public_id, config):
 def delete_voice_sample(public_id, config):
     """Delete a private voice sample stored as an authenticated video asset."""
     return delete_authenticated_audio(public_id, config)
+
+
+def signed_voice_delivery_url(public_id, fallback_url, config):
+    """Create a short signed authenticated-delivery URL after app authorization."""
+    if not public_id:
+        return fallback_url
+    cloudinary = _cloudinary_modules()
+    configure_cloudinary(config)
+    # The stored public ID intentionally has no extension, while Cloudinary's
+    # authenticated video/audio delivery URL must include the uploaded format.
+    # Without it Cloudinary returns an unsigned-looking 404 response; browsers
+    # following our cross-origin redirect surface that response as a generic
+    # Axios "Network Error".
+    path = urlparse(str(fallback_url or "")).path
+    extension = path.rsplit("/", 1)[-1].rsplit(".", 1)[-1].lower()
+    delivery_options = (
+        {"format": extension}
+        if extension in ALLOWED_EXTENSIONS
+        else {}
+    )
+    url, _ = cloudinary.utils.cloudinary_url(
+        public_id,
+        resource_type="video",
+        type="authenticated",
+        sign_url=True,
+        secure=True,
+        **delivery_options,
+    )
+    return url
+
+
+def stream_authenticated_audio(
+    public_id,
+    fallback_url,
+    config,
+    range_header=None,
+):
+    """Proxy private Cloudinary audio without a browser cross-origin redirect."""
+    signed_url = signed_voice_delivery_url(public_id, fallback_url, config)
+    request_headers = {}
+    if range_header:
+        request_headers["Range"] = range_header
+    timeout = int(config.get("CLOUDINARY_DELIVERY_TIMEOUT_SECONDS", 60))
+    try:
+        upstream = requests.get(
+            signed_url,
+            headers=request_headers,
+            stream=True,
+            allow_redirects=True,
+            timeout=(5, timeout),
+        )
+    except requests.RequestException as exc:
+        _log_storage_failure("authenticated audio delivery", public_id)
+        raise CloudinaryServiceError(
+            "Private audio delivery is temporarily unavailable."
+        ) from exc
+
+    if upstream.status_code not in {200, 206}:
+        upstream.close()
+        if has_app_context():
+            current_app.logger.error(
+                "Cloudinary audio delivery failed for public_id=%s status=%s",
+                public_id,
+                upstream.status_code,
+            )
+        raise CloudinaryServiceError(
+            "Private audio delivery is temporarily unavailable."
+        )
+
+    response = Response(
+        stream_with_context(upstream.iter_content(chunk_size=64 * 1024)),
+        status=upstream.status_code,
+        content_type=upstream.headers.get(
+            "Content-Type",
+            "application/octet-stream",
+        ),
+    )
+    for header in (
+        "Content-Length",
+        "Content-Range",
+        "Accept-Ranges",
+        "Content-Disposition",
+        "ETag",
+        "Last-Modified",
+    ):
+        value = upstream.headers.get(header)
+        if value:
+            response.headers[header] = value
+    response.call_on_close(upstream.close)
+    return response
+
+
+def upload_book_media(file, media_type, owner_id, config):
+    """Compatibility wrapper for the legacy pre-book catalog image uploader."""
+    extension = validate_uploaded_file(file, media_type)
+    folder = f"{get_user_root_folder(owner_id)}/Image/Book_media"
+    stem = sanitize_folder_segment(
+        str(getattr(file, "filename", "")).rsplit(".", 1)[0]
+    )
+    metadata = upload_asset(
+        file,
+        folder,
+        resource_type="image" if media_type == "image" else "video",
+        public_id=f"{folder}/{stem}_{uuid4().hex}",
+        overwrite=False,
+        format=extension,
+        config=config,
+    )
+    return metadata["secure_url"]
+
+
+def upload_profile_image(
+    file,
+    profile_type,
+    profile_id,
+    config,
+    *,
+    owner_id=None,
+    profile_name=None,
+):
+    """Compatibility wrapper for canonical account and child profile images."""
+    extension = validate_uploaded_file(file, "image")
+    if profile_type == "accounts":
+        folder = get_user_profile_folder(owner_id or profile_id)
+    elif profile_type == "children" and owner_id is not None:
+        folder = get_child_profile_folder(
+            owner_id,
+            profile_id,
+            profile_name,
+        )
+    else:
+        raise CloudinaryServiceError(
+            "owner_id is required for canonical child profile storage."
+        )
+    metadata = replace_asset(
+        file,
+        folder,
+        resource_type="image",
+        public_id=f"{folder}/profile",
+        format=extension,
+        config=config,
+    )
+    return metadata["secure_url"], metadata["public_id"]
+
+
+def delete_profile_image(public_id, config):
+    """Compatibility wrapper for exact public profile-image deletion."""
+    return delete_asset(
+        public_id,
+        resource_type="image",
+        delivery_type="upload",
+        config=config,
+    )
