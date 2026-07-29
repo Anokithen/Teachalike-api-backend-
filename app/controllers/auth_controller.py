@@ -69,3 +69,106 @@ def _validate_login_payload(data):
         errors.append(f"password must be {MAX_PASSWORD_LENGTH} characters or fewer.")
 
     return errors
+
+
+def register():
+    registration_key = anonymized_key(
+        "register-ip", request.remote_addr or "unknown"
+    )
+    limit = current_app.config["REGISTER_RATE_LIMIT_ATTEMPTS"]
+    window = current_app.config["REGISTER_RATE_LIMIT_WINDOW_SECONDS"]
+    blocked, retry_after = registration_attempts.blocked(
+        registration_key, limit, window
+    )
+    if blocked:
+        response = jsonify(
+            {"error": "Too many registration attempts. Please try again later."}
+        )
+        response.status_code = 429
+        response.headers["Retry-After"] = str(retry_after)
+        return response
+    registration_attempts.record_failure(registration_key, window)
+
+    data = request.get_json(silent=True)
+    errors = _validate_register_payload(data)
+    if errors:
+        return jsonify({"errors": errors}), 400
+
+    email = str(data.get("email")).strip().lower()
+
+    if Parent.query.filter_by(email=email).first():
+        return jsonify({"error": "An account with this email already exists."}), 409
+
+    try:
+        # Public registration must never be able to create privileged or
+        # staff accounts. Teachers and admins are created through the
+        # authenticated admin endpoints.
+        parent = Parent(
+            name=str(data.get("name")).strip(),
+            email=email,
+            role="parent",
+        )
+
+        parent.set_password(str(data.get("password")))
+
+        db.session.add(parent)
+        db.session.commit()
+
+        return jsonify({
+            "message": "Parent account created successfully.",
+            "parent": parent.to_dict()
+        }), 201
+
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify({"error": "An account with this email already exists."}), 409
+    except Exception:
+        db.session.rollback()
+        return jsonify({"error": "An internal server error occurred."}), 500
+
+
+def login():
+    data = request.get_json(silent=True)
+    errors = _validate_login_payload(data)
+    if errors:
+        return jsonify({"errors": errors}), 400
+
+    email = str(data.get("email")).strip().lower()
+    ip_key = anonymized_key("login-ip", request.remote_addr or "unknown")
+    account_key = anonymized_key("login-account", email)
+    limit = current_app.config["LOGIN_RATE_LIMIT_ATTEMPTS"]
+    window = current_app.config["LOGIN_RATE_LIMIT_WINDOW_SECONDS"]
+    for key in (ip_key, account_key):
+        blocked, retry_after = login_attempts.blocked(key, limit, window)
+        if blocked:
+            response = jsonify(
+                {"error": "Too many failed login attempts. Please try again later."}
+            )
+            response.status_code = 429
+            response.headers["Retry-After"] = str(retry_after)
+            return response
+
+    try:
+        parent = Parent.query.filter_by(email=email).first()
+
+        if not parent or not parent.check_password(str(data.get("password"))):
+            login_attempts.record_failure(ip_key, window)
+            login_attempts.record_failure(account_key, window)
+            return jsonify({"error": "Invalid email or password."}), 401
+
+        if parent.is_banned:
+            return jsonify({"error": "This account has been banned. Contact an administrator."}), 403
+
+        login_attempts.reset(account_key)
+        access_token = create_access_token(identity=parent)
+        refresh_token = create_refresh_token(identity=parent)
+        return jsonify(
+            {
+                "message": "Login successful.",
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "parent": parent.to_dict(),
+            }
+        ), 200
+    except Exception:
+        return jsonify({"error": "An internal server error occurred."}), 500
