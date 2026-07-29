@@ -172,3 +172,64 @@ def login():
         ), 200
     except Exception:
         return jsonify({"error": "An internal server error occurred."}), 500
+
+
+@jwt_required(refresh=True)
+def refresh():
+    identity = get_jwt_identity()
+    parent = db.session.get(Parent, int(identity))
+    if not parent:
+        return jsonify({"error": "Account not found."}), 404
+    if parent.is_banned:
+        return jsonify({"error": "This account has been banned. Contact an administrator."}), 403
+    access_token = create_access_token(identity=parent)
+    return jsonify({"access_token": access_token}), 200
+
+
+@jwt_required()
+def logout():
+    access_payload = get_jwt()
+    payloads = [access_payload]
+    data = request.get_json(silent=True) or {}
+    refresh_token = data.get("refresh_token")
+    if refresh_token:
+        try:
+            refresh_payload = decode_token(str(refresh_token))
+        except Exception:
+            refresh_payload = None
+        if refresh_payload and (
+            refresh_payload.get("type") != "refresh"
+            or str(refresh_payload.get("sub")) != str(get_jwt_identity())
+        ):
+            refresh_payload = None
+        if refresh_payload:
+            payloads.append(refresh_payload)
+
+    try:
+        now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+        RevokedToken.query.filter(RevokedToken.expires_at < now_naive).delete(
+            synchronize_session=False
+        )
+        existing = {
+            row.jti
+            for row in RevokedToken.query.filter(
+                RevokedToken.jti.in_([payload["jti"] for payload in payloads])
+            ).all()
+        }
+        for payload in payloads:
+            if payload["jti"] in existing:
+                continue
+            db.session.add(
+                RevokedToken(
+                    jti=payload["jti"],
+                    token_type=payload["type"],
+                    expires_at=datetime.fromtimestamp(
+                        payload["exp"], timezone.utc
+                    ).replace(tzinfo=None),
+                )
+            )
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        return jsonify({"error": "Logout could not be completed."}), 500
+    return jsonify({"message": "Logged out successfully."}), 200
