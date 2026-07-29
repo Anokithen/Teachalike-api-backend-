@@ -87,3 +87,69 @@ def _resolve_owning_parent(data):
         return None, ["This parent account has been banned and cannot have children added."]
 
     return owning_parent.id, []
+
+
+def create_child():
+    data = request.get_json(silent=True)
+    errors = _validate_child_payload(data)
+
+    parent_id, owner_errors = _resolve_owning_parent(data or {})
+    errors.extend(owner_errors)
+
+    if errors:
+        return jsonify({"errors": errors}), 400
+
+    try:
+        child = Child(
+            parent_id=parent_id,
+            created_by_id=current_user.id,
+            name=str(data.get("name")).strip(),
+            age=int(data.get("age")),
+            gender=data.get("gender", "prefer_not_to_say"),
+            reading_level=str(data.get("reading_level")).strip().lower()
+            if data.get("reading_level")
+            else "beginner",
+        )
+        if data.get("child_pin"):
+            child.set_pin(str(data["child_pin"]))
+        db.session.add(child)
+        db.session.commit()
+        return jsonify({"message": "Child profile created successfully.", "child": child.to_dict()}), 201
+    except Exception:
+        db.session.rollback()
+        return jsonify({"error": "An internal server error occurred."}), 500
+
+
+def list_children():
+    """GET /api/children
+
+    - Parent: only their own children.
+    - Teacher: only the children they personally added.
+    - Admin: every child in the system (also available via /api/admin/children).
+    """
+    if current_user.is_admin:
+        children = Child.query.order_by(Child.id.desc()).all()
+    elif current_user.is_teacher:
+        children = (
+            Child.query.filter_by(created_by_id=current_user.id)
+            .order_by(Child.id.desc())
+            .all()
+        )
+    else:
+        children = Child.query.filter_by(parent_id=current_user.id).order_by(Child.id.desc()).all()
+
+    return jsonify({"children": [c.to_dict() for c in children]}), 200
+
+
+def get_child(child_id):
+    child = db.session.get(Child, child_id)
+    if not can_access_child(child):
+        return jsonify({"error": "Child not found."}), 404
+
+    stats = {
+        "total_sessions": len(child.reading_sessions),
+        "total_game_results": len(child.game_results),
+    }
+    data = child.to_dict()
+    data["stats"] = stats
+    return jsonify({"child": data}), 200
