@@ -122,3 +122,27 @@ def _generate_narration(app, narration_id):
             if output_path and os.path.exists(output_path):
                 os.remove(output_path)
             db.session.remove()
+
+
+def _enqueue_narration(narration_id):
+    app = current_app._get_current_object()
+    with NARRATION_FUTURES_LOCK:
+        existing = NARRATION_FUTURES.get(narration_id)
+        if existing is not None and not existing.done():
+            return False
+        future = NARRATION_EXECUTOR.submit(_generate_narration, app, narration_id)
+        NARRATION_FUTURES[narration_id] = future
+
+        def forget_finished(done_future):
+            with NARRATION_FUTURES_LOCK:
+                if NARRATION_FUTURES.get(narration_id) is done_future:
+                    NARRATION_FUTURES.pop(narration_id, None)
+
+        future.add_done_callback(forget_finished)
+        return True
+
+
+def _narration_worker_is_live(narration_id):
+    with NARRATION_FUTURES_LOCK:
+        future = NARRATION_FUTURES.get(narration_id)
+        return future is not None and not future.done()
