@@ -119,3 +119,82 @@ def clone_voice_from_url(reference_url, config, profile_label=None, owner_name=N
         owner_name,
         profile_id,
     )
+
+
+def delete_voice(voice_id, config):
+    """Delete the upstream clone when a user deletes a local profile."""
+    if not voice_id:
+        return
+    response = _request(
+        "DELETE",
+        f"{API_BASE_URL}/voices/{voice_id}",
+        "delete this voice",
+        headers={"xi-api-key": _api_key(config)},
+        timeout=int(config.get("ELEVENLABS_REQUEST_TIMEOUT", 120)),
+    )
+    if response.status_code == 404:
+        return
+    _raise_for_api_error(response, "delete this voice")
+
+
+def _ffmpeg_binary(config):
+    configured = config.get("FFMPEG_BINARY") or os.getenv("FFMPEG_BINARY")
+    binary = configured or shutil.which("ffmpeg")
+    if not binary:
+        raise ElevenLabsError("ffmpeg is required to combine a long narration. Install ffmpeg on the API server.")
+    return binary
+
+
+def split_text_into_chunks(text, max_chars=4500):
+    """Split a book into API-sized, sentence-aware chunks."""
+    sentences = [item.strip() for item in re.split(r"(?<=[.!?])\s+|\n+", text or "") if item.strip()]
+    chunks, current = [], ""
+    for sentence in sentences:
+        pieces, words, piece = [], sentence.split(), ""
+        for word in words:
+            candidate = f"{piece} {word}".strip()
+            if piece and len(candidate) > max_chars:
+                pieces.append(piece)
+                piece = word
+            else:
+                piece = candidate
+        if piece:
+            pieces.append(piece)
+        for item in pieces:
+            candidate = f"{current} {item}".strip()
+            if current and len(candidate) > max_chars:
+                chunks.append(current)
+                current = item
+            else:
+                current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _synthesize_chunk(voice_id, text, config, previous_text=None, next_text=None):
+    payload = {
+        "text": text,
+        "model_id": config.get("ELEVENLABS_MODEL_ID", "eleven_multilingual_v2"),
+    }
+    language_code = str(config.get("ELEVENLABS_LANGUAGE_CODE") or "").strip()
+    if language_code:
+        payload["language_code"] = language_code
+    if previous_text:
+        payload["previous_text"] = previous_text
+    if next_text:
+        payload["next_text"] = next_text
+
+    response = _request(
+        "POST",
+        f"{API_BASE_URL}/text-to-speech/{voice_id}",
+        "generate this narration",
+        params={"output_format": config.get("ELEVENLABS_OUTPUT_FORMAT", "mp3_44100_128")},
+        headers={"xi-api-key": _api_key(config), "Content-Type": "application/json"},
+        json=payload,
+        timeout=int(config.get("ELEVENLABS_REQUEST_TIMEOUT", 120)),
+    )
+    _raise_for_api_error(response, "generate this narration")
+    if not response.content:
+        raise ElevenLabsError("ElevenLabs returned an empty audio file.")
+    return response.content
