@@ -407,3 +407,413 @@ class AssetEndpointTests(unittest.TestCase):
 
     def _headers(self, user):
         return {"Authorization": f"Bearer {create_access_token(identity=user.id)}"}
+
+    def _upload_result(
+        self,
+        _file,
+        asset_folder,
+        resource_type="auto",
+        public_id=None,
+        **kwargs,
+    ):
+        number = next(self.ids)
+        return {
+            "asset_id": f"asset-{number}",
+            "public_id": public_id or f"unique-{number}",
+            "secure_url": (
+                f"https://res.cloudinary.test/{number}."
+                f"{kwargs.get('format') or ('png' if resource_type == 'image' else 'mp4')}"
+            ),
+            "resource_type": resource_type,
+            "delivery_type": kwargs.get("delivery_type") or "upload",
+            "format": kwargs.get("format") or ("png" if resource_type == "image" else "mp4"),
+            "bytes": 72,
+            "width": 10 if resource_type != "raw" else None,
+            "height": 10 if resource_type != "raw" else None,
+            "duration": 1.5 if resource_type == "video" else None,
+            "asset_folder": asset_folder,
+            "original_filename": "upload",
+        }
+
+    @patch("app.controllers.asset_controller.upload_asset")
+    def test_profile_upload_and_replacement(self, upload):
+        upload.side_effect = self._upload_result
+        for _ in range(2):
+            response = self.client.post(
+                "/api/assets/profile-image",
+                headers=self._headers(self.owner),
+                data={"file": (io.BytesIO(PNG), "photo.png")},
+                content_type="multipart/form-data",
+            )
+            self.assertEqual(response.status_code, 201, response.json)
+        self.assertEqual(
+            Asset.query.filter_by(owner_user_id=self.owner.id, deleted_at=None).count(),
+            1,
+        )
+        self.assertTrue(upload.call_args.kwargs["public_id"].endswith("/profile"))
+
+    @patch("app.controllers.asset_controller.upload_asset")
+    def test_same_filename_different_users_has_distinct_public_ids(self, upload):
+        upload.side_effect = self._upload_result
+        public_ids = []
+        for user in (self.owner, self.other):
+            response = self.client.post(
+                "/api/assets/profile-image",
+                headers=self._headers(user),
+                data={"file": (io.BytesIO(PNG), "same.png")},
+                content_type="multipart/form-data",
+            )
+            self.assertEqual(response.status_code, 201, response.json)
+            public_ids.append(upload.call_args.kwargs["public_id"])
+        self.assertNotEqual(*public_ids)
+
+    @patch("app.controllers.asset_controller.delete_asset")
+    @patch("app.controllers.asset_controller.upload_asset")
+    def test_child_rename_replacement_cleans_previous_public_id(
+        self, upload, destroy
+    ):
+        upload.side_effect = self._upload_result
+        first = self.client.post(
+            f"/api/assets/children/{self.child.id}/profile-image",
+            headers=self._headers(self.owner),
+            data={"file": (io.BytesIO(PNG), "photo.png")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(first.status_code, 201, first.json)
+        old_public_id = db.session.get(
+            Asset, first.json["data"]["id"]
+        ).cloudinary_public_id
+        self.child.name = "Renamed Child"
+        db.session.commit()
+        second = self.client.post(
+            f"/api/assets/children/{self.child.id}/profile-image",
+            headers=self._headers(self.owner),
+            data={"file": (io.BytesIO(PNG), "photo.png")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(second.status_code, 201, second.json)
+        new_public_id = db.session.get(
+            Asset, second.json["data"]["id"]
+        ).cloudinary_public_id
+        self.assertNotEqual(old_public_id, new_public_id)
+        destroy.assert_called_once()
+
+    def test_bad_type_returns_415(self):
+        response = self.client.post(
+            "/api/assets/profile-image",
+            headers=self._headers(self.owner),
+            data={"file": (io.BytesIO(b"not an image"), "bad.txt")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(response.status_code, 415)
+
+    def test_incorrect_mime_type_returns_415(self):
+        response = self.client.post(
+            "/api/assets/profile-image",
+            headers=self._headers(self.owner),
+            data={
+                "file": (
+                    io.BytesIO(PNG),
+                    "photo.png",
+                    "application/octet-stream",
+                )
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(response.status_code, 415)
+
+    def test_incorrect_file_signature_returns_415(self):
+        response = self.client.post(
+            "/api/assets/profile-image",
+            headers=self._headers(self.owner),
+            data={"file": (io.BytesIO(b"not-png"), "photo.png")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(response.status_code, 415)
+
+    def test_oversized_upload_returns_413(self):
+        self.app.config["MAX_PROFILE_IMAGE_SIZE_MB"] = 0
+        response = self.client.post(
+            "/api/assets/profile-image",
+            headers=self._headers(self.owner),
+            data={"file": (io.BytesIO(PNG), "photo.png")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(response.status_code, 413)
+
+    def test_missing_cloudinary_configuration_returns_503(self):
+        self.app.config.update(
+            CLOUDINARY_CLOUD_NAME=None,
+            CLOUDINARY_API_KEY=None,
+            CLOUDINARY_API_SECRET=None,
+        )
+        response = self.client.post(
+            "/api/assets/profile-image",
+            headers=self._headers(self.owner),
+            data={"file": (io.BytesIO(PNG), "photo.png")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(response.status_code, 503, response.json)
+        self.assertNotIn("api_secret", response.get_data(as_text=True).lower())
+
+    @patch("app.controllers.asset_controller.upload_asset")
+    def test_child_ownership_is_enforced(self, upload):
+        upload.side_effect = self._upload_result
+        response = self.client.post(
+            f"/api/assets/children/{self.child.id}/profile-image",
+            headers=self._headers(self.other),
+            data={"file": (io.BytesIO(PNG), "photo.png")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(response.status_code, 403)
+        upload.assert_not_called()
+
+    @patch("app.controllers.asset_controller.upload_asset")
+    def test_cloudinary_failure_is_sanitized(self, upload):
+        from app.services.cloudinary_service import CloudinaryUploadError
+
+        upload.side_effect = CloudinaryUploadError("sdk secret detail")
+        response = self.client.post(
+            "/api/assets/profile-image",
+            headers=self._headers(self.owner),
+            data={"file": (io.BytesIO(PNG), "photo.png")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(response.status_code, 503)
+        self.assertNotIn("sdk secret detail", response.get_data(as_text=True))
+
+    @patch("app.controllers.asset_controller.delete_asset")
+    @patch("app.controllers.asset_controller.upload_asset")
+    def test_initial_profile_database_failure_cleans_upload(
+        self, upload, destroy
+    ):
+        from sqlalchemy.exc import SQLAlchemyError
+
+        upload.side_effect = self._upload_result
+        with patch.object(db.session, "commit", side_effect=SQLAlchemyError("db down")):
+            response = self.client.post(
+                "/api/assets/profile-image",
+                headers=self._headers(self.owner),
+                data={"file": (io.BytesIO(PNG), "photo.png")},
+                content_type="multipart/form-data",
+            )
+        self.assertEqual(response.status_code, 500)
+        destroy.assert_called_once()
+
+    @patch("app.controllers.asset_controller.delete_asset")
+    @patch("app.controllers.asset_controller.upload_asset")
+    def test_replacement_database_failure_preserves_confirmed_replacement(
+        self, upload, destroy
+    ):
+        from sqlalchemy.exc import SQLAlchemyError
+
+        upload.side_effect = self._upload_result
+        first = self.client.post(
+            "/api/assets/profile-image",
+            headers=self._headers(self.owner),
+            data={"file": (io.BytesIO(PNG), "first.png")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(first.status_code, 201, first.json)
+        with patch.object(db.session, "commit", side_effect=SQLAlchemyError("db down")):
+            second = self.client.post(
+                "/api/assets/profile-image",
+                headers=self._headers(self.owner),
+                data={"file": (io.BytesIO(PNG), "second.png")},
+                content_type="multipart/form-data",
+            )
+        self.assertEqual(second.status_code, 500)
+        destroy.assert_not_called()
+
+    def test_voice_and_narration_upload_endpoints(self):
+        with (
+            patch(
+                "app.controllers.voice_profile_controller.upload_asset",
+                side_effect=self._upload_result,
+            ) as voice_upload,
+            patch(
+                "app.controllers.voice_profile_controller.clone_voice",
+                return_value="elevenlabs-voice",
+            ),
+        ):
+            voice_response = self.client.post(
+                "/api/assets/voice-profiles",
+                headers=self._headers(self.owner),
+                data={"file": (io.BytesIO(WAV), "voice.wav"), "label": "My voice"},
+                content_type="multipart/form-data",
+            )
+        self.assertEqual(voice_response.status_code, 201, voice_response.json)
+        voice_id = voice_response.json["data"]["voice_profile_id"]
+        self.assertEqual(
+            voice_upload.call_args.args[1],
+            f"teachalike/{self.owner.id}/Audio/Voice_profiles",
+        )
+        self.assertEqual(
+            voice_upload.call_args.kwargs["delivery_type"],
+            "authenticated",
+        )
+        with patch(
+            "app.controllers.asset_controller.upload_asset",
+            side_effect=self._upload_result,
+        ) as narration_upload:
+            narration_response = self.client.post(
+                f"/api/assets/books/{self.book.id}/narrations",
+                headers=self._headers(self.owner),
+                data={
+                    "file": (io.BytesIO(WAV), "narration.wav"),
+                    "voice_profile_id": str(voice_id),
+                },
+                content_type="multipart/form-data",
+            )
+        self.assertEqual(
+            narration_response.status_code, 201, narration_response.json
+        )
+        self.assertIsNotNone(narration_response.json["data"]["generation_id"])
+        self.assertIn(
+            f"/voice_{voice_id}_{self.book.id}_",
+            narration_upload.call_args.kwargs["public_id"],
+        )
+        self.assertEqual(
+            Asset.query.filter_by(asset_category=VOICE_PROFILE).count(),
+            1,
+        )
+        self.assertEqual(
+            Asset.query.filter_by(asset_category=GENERATED_BOOK_AUDIO).count(),
+            1,
+        )
+
+    def test_voice_profile_accepts_mp3_larger_than_five_mb(self):
+        mp3_sample = MP3 + (b"\0" * (6 * 1024 * 1024))
+        with (
+            patch(
+                "app.controllers.voice_profile_controller.upload_asset",
+                side_effect=self._upload_result,
+            ) as upload,
+            patch(
+                "app.controllers.voice_profile_controller.clone_voice",
+                return_value="elevenlabs-large-mp3",
+            ),
+        ):
+            response = self.client.post(
+                "/api/voice-profiles",
+                headers=self._headers(self.owner),
+                data={
+                    "audio": (
+                        io.BytesIO(mp3_sample),
+                        "voice.mp3",
+                        "audio/x-mpeg",
+                    )
+                },
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(response.status_code, 201, response.json)
+        self.assertEqual(upload.call_args.kwargs["format"], "mp3")
+        response.request.environ["wsgi.input"].close()
+        response.request.close()
+        response.close()
+
+    @patch("app.controllers.asset_controller.upload_asset")
+    def test_multiple_narrations_and_voice_profiles_are_distinct(self, upload):
+        upload.side_effect = self._upload_result
+        first_voice = VoiceProfile(
+            parent_id=self.owner.id,
+            label="One",
+            voice_sample_url="https://example.test/one.wav",
+            cloudinary_public_id="voice-one",
+            status=STATUS_READY,
+        )
+        second_voice = VoiceProfile(
+            parent_id=self.owner.id,
+            label="Two",
+            voice_sample_url="https://example.test/two.wav",
+            cloudinary_public_id="voice-two",
+            status=STATUS_READY,
+        )
+        db.session.add_all([first_voice, second_voice])
+        db.session.commit()
+
+        generation_ids = []
+        for profile in (first_voice, first_voice, second_voice):
+            response = self.client.post(
+                f"/api/assets/books/{self.book.id}/narrations",
+                headers=self._headers(self.owner),
+                data={
+                    "file": (io.BytesIO(MP3), "narration.mp3"),
+                    "voice_profile_id": str(profile.id),
+                },
+                content_type="multipart/form-data",
+            )
+            self.assertEqual(response.status_code, 201, response.json)
+            generation_ids.append(response.json["data"]["generation_id"])
+
+        self.assertEqual(len(set(generation_ids)), 3)
+        public_ids = [
+            asset.cloudinary_public_id
+            for asset in Asset.query.filter_by(
+                asset_category=GENERATED_BOOK_AUDIO
+            ).all()
+        ]
+        self.assertEqual(len(set(public_ids)), 3)
+        self.assertTrue(
+            any(f"voice_{second_voice.id}_{self.book.id}_" in item for item in public_ids)
+        )
+
+    def test_legacy_routes_delegate_without_old_folders(self):
+        with patch(
+            "app.controllers.asset_controller.upload_asset",
+            side_effect=self._upload_result,
+        ) as upload:
+            parent_response = self.client.post(
+                "/api/parents/me/profile-image",
+                headers=self._headers(self.owner),
+                data={"profile_image": (io.BytesIO(PNG), "profile.png")},
+                content_type="multipart/form-data",
+            )
+        self.assertEqual(parent_response.status_code, 200, parent_response.json)
+        self.assertEqual(
+            upload.call_args.args[1],
+            f"teachalike/{self.owner.id}/Image/Profile",
+        )
+
+        with patch(
+            "app.controllers.asset_controller.upload_asset",
+            side_effect=self._upload_result,
+        ) as upload:
+            child_response = self.client.post(
+                f"/api/children/{self.child.id}/profile-image",
+                headers=self._headers(self.owner),
+                data={"profile_image": (io.BytesIO(PNG), "profile.png")},
+                content_type="multipart/form-data",
+            )
+        self.assertEqual(child_response.status_code, 200, child_response.json)
+        self.assertIn(
+            f"/{self.child.id}_same_name",
+            upload.call_args.args[1],
+        )
+
+        with (
+            patch(
+                "app.controllers.voice_profile_controller.upload_asset",
+                side_effect=self._upload_result,
+            ) as upload,
+            patch(
+                "app.controllers.voice_profile_controller.clone_voice",
+                return_value="elevenlabs-legacy",
+            ),
+        ):
+            voice_response = self.client.post(
+                "/api/voice-profiles",
+                headers=self._headers(self.owner),
+                data={"audio": (io.BytesIO(WAV), "voice.wav")},
+                content_type="multipart/form-data",
+            )
+        self.assertEqual(voice_response.status_code, 201, voice_response.json)
+        self.assertEqual(
+            upload.call_args.args[1],
+            f"teachalike/{self.owner.id}/Audio/Voice_profiles",
+        )
+        self.assertNotIn(
+            "users_voiceprofiles",
+            upload.call_args.kwargs["public_id"],
+        )
