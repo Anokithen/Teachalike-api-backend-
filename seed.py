@@ -249,3 +249,144 @@ def ensure_optional_narration(book, voice_profile):
         cloudinary_public_id=public_id,
     ))
     return True
+
+
+def main():
+    app = create_app()
+    with app.app_context():
+        db.create_all()
+
+        account_specs = [
+            ("Site Admin", os.getenv("SEED_ADMIN_EMAIL", "admin@teachalike.app"), ROLE_ADMIN, os.getenv("SEED_ADMIN_PASSWORD", "ChangeMe123!")),
+            ("Jamie Perera", os.getenv("SEED_PARENT_EMAIL", "jamie@teachalike.app"), ROLE_PARENT, os.getenv("SEED_PARENT_PASSWORD", "ParentDemo123!")),
+            ("Priya Fernando", os.getenv("SEED_PARENT_2_EMAIL", "priya@teachalike.app"), ROLE_PARENT, os.getenv("SEED_PARENT_2_PASSWORD", "ParentDemo123!")),
+            ("Alex Silva", os.getenv("SEED_TEACHER_EMAIL", "alex.teacher@teachalike.app"), ROLE_TEACHER, os.getenv("SEED_TEACHER_PASSWORD", "TeacherDemo123!")),
+        ]
+        accounts = {}
+        accounts_created = 0
+        for key, name, email, role, password in (
+            ("admin", *account_specs[0]),
+            ("parent", *account_specs[1]),
+            ("parent_2", *account_specs[2]),
+            ("teacher", *account_specs[3]),
+        ):
+            accounts[key], created = get_or_create_account(name, email, role, password)
+            accounts_created += int(created)
+        db.session.flush()
+
+        child_specs = [
+            (accounts["parent"], None, "Ava", 6, "female", "beginner", "123456"),
+            (accounts["parent"], accounts["teacher"], "Noah", 8, "male", "intermediate", "234567"),
+            (accounts["parent_2"], accounts["teacher"], "Maya", 10, "female", "advanced", "345678"),
+            (accounts["parent_2"], None, "Leo", 5, "male", "beginner", "456789"),
+        ]
+        children = []
+        children_created = 0
+        for spec in child_specs:
+            child, created = get_or_create_child(*spec)
+            children.append(child)
+            children_created += int(created)
+        db.session.flush()
+
+        books = []
+        books_created = 0
+        for data in BOOKS:
+            book, created = get_or_create_book(data)
+            books.append(book)
+            books_created += int(created)
+        db.session.flush()
+
+        games_added = 0
+        for book in books:
+            games_added += len(create_default_mini_games(book))
+        db.session.flush()
+
+        jamie_voice, jamie_voice_created = get_or_create_voice_profile(accounts["parent"], "Jamie's voice")
+        priya_voice, priya_voice_created = get_or_create_voice_profile(accounts["parent_2"], "Priya's voice")
+        db.session.flush()
+
+        voice_by_child = {
+            children[0].id: jamie_voice,
+            children[1].id: jamie_voice,
+            children[2].id: priya_voice,
+            children[3].id: priya_voice,
+        }
+        sessions_created = 0
+        feedback_created = 0
+        game_results_created = 0
+        leaderboard_created = 0
+
+        quiz_games = {
+            book.id: next((game for game in book.mini_games if game.game_type == "quiz"), None)
+            for book in books
+        }
+        for child_index, child in enumerate(children):
+            voice_profile = voice_by_child[child.id]
+            completed, created = get_or_create_session(
+                child,
+                books[child_index % 3],
+                voice_profile,
+                completed=True,
+                accuracy=92 - child_index * 4,
+                minutes_ago=1440 + child_index * 30,
+            )
+            sessions_created += int(created)
+            db.session.flush()
+            feedback_created += int(ensure_feedback(
+                completed,
+                "praise",
+                "Wonderful reading! You used a clear, confident voice.",
+            ))
+            feedback_created += int(ensure_feedback(
+                completed,
+                "tip",
+                "Try pausing briefly at each full stop before you continue.",
+            ))
+
+            _, created = get_or_create_session(
+                child,
+                books[(child_index % 3) + 3],
+                voice_profile,
+                completed=False,
+                accuracy=84 - child_index * 3,
+                minutes_ago=3 + child_index,
+            )
+            sessions_created += int(created)
+
+            for book_index, score in ((child_index % 3, 30 + child_index * 4), ((child_index + 1) % 3, 42 + child_index * 3)):
+                game = quiz_games[books[book_index].id]
+                if game:
+                    game_results_created += int(ensure_game_result(child, game, score))
+
+            leaderboard_created += int(ensure_leaderboard_entry(
+                child,
+                points=70 + child_index * 15,
+                streak_count=3 + child_index,
+            ))
+
+        db.session.flush()
+        narrations_created = int(ensure_optional_narration(books[0], jamie_voice))
+        db.session.commit()
+
+        print("TeachAlike demo data is ready.")
+        print(
+            "Created: "
+            f"{accounts_created} accounts, {children_created} children, "
+            f"{books_created} books, {games_added} mini-games, "
+            f"{int(jamie_voice_created) + int(priya_voice_created)} voice profiles, "
+            f"{sessions_created} reading sessions, {feedback_created} feedback entries, "
+            f"{game_results_created} game results, {leaderboard_created} leaderboard entries, "
+            f"{narrations_created} narration records."
+        )
+        print("Demo logins:")
+        print(f"  Admin:   {accounts['admin'].email} / {account_specs[0][3]}")
+        print(f"  Parent:  {accounts['parent'].email} / {account_specs[1][3]}")
+        print(f"  Parent 2:{accounts['parent_2'].email} / {account_specs[2][3]}")
+        print(f"  Teacher: {accounts['teacher'].email} / {account_specs[3][3]}")
+        print("Child PINs: Ava 123456, Noah 234567, Maya 345678, Leo 456789")
+        if not os.getenv("SEED_NARRATION_AUDIO_URL") or not os.getenv("SEED_NARRATION_CLOUDINARY_PUBLIC_ID"):
+            print("Narration asset skipped; set SEED_NARRATION_AUDIO_URL and SEED_NARRATION_CLOUDINARY_PUBLIC_ID to seed one.")
+
+
+if __name__ == "__main__":
+    main()
