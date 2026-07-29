@@ -33,7 +33,7 @@ class DatabaseConfigTests(unittest.TestCase):
         ):
             self.assertTrue(_is_railway_environment())
 
-    def test_database_uri_uses_only_supported_variables(self):
+    def test_database_uri_uses_generic_db_variables(self):
         with patch.dict(
             os.environ,
             {
@@ -72,13 +72,12 @@ class DatabaseConfigTests(unittest.TestCase):
             "@database.example:3306/teach+alike",
         )
 
-    def test_other_database_variables_are_ignored(self):
+    def test_mysql_url_has_priority_over_individual_variables(self):
         with patch.dict(
             os.environ,
             {
-                "MYSQL_URL": "mysql://wrong:wrong@wrong:9999/wrong",
-                "DATABASE_URL": "mysql://wrong:wrong@wrong:9999/wrong",
-                "MYSQLHOST": "wrong",
+                "MYSQL_URL": "mysql://url-user:url-pass@url-host:3306/url-db",
+                "MYSQLHOST": "individual-host",
                 "DB_NAME": "railway",
                 "DB_HOST": "database.example",
                 "DB_PASSWORD": "secret",
@@ -91,8 +90,68 @@ class DatabaseConfigTests(unittest.TestCase):
 
         self.assertEqual(
             uri,
-            "mysql+pymysql://root:secret@database.example:3306/railway",
+            "mysql+pymysql://url-user:url-pass@url-host:3306/url-db",
         )
+
+    def test_pymysql_url_is_preserved(self):
+        with patch.dict(
+            os.environ,
+            {
+                "DATABASE_URL": (
+                    "mysql+pymysql://user:secret@database.example:3306/railway"
+                ),
+            },
+            clear=True,
+        ):
+            uri = _build_database_uri()
+
+        self.assertEqual(
+            uri,
+            "mysql+pymysql://user:secret@database.example:3306/railway",
+        )
+
+    def test_non_mysql_database_url_is_rejected(self):
+        with patch.dict(
+            os.environ,
+            {"DATABASE_URL": "postgresql://user:secret@database/db"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ValueError, "Only MySQL"):
+                _build_database_uri()
+
+    def test_railway_individual_variables_precede_generic_variables(self):
+        with patch.dict(
+            os.environ,
+            {
+                "MYSQLDATABASE": "railway",
+                "MYSQLHOST": "mysql.railway.internal",
+                "MYSQLPASSWORD": "railway-secret",
+                "MYSQLPORT": "3306",
+                "MYSQLUSER": "railway-user",
+                "DB_NAME": "wrong",
+                "DB_HOST": "wrong",
+                "DB_PASSWORD": "wrong",
+                "DB_PORT": "9999",
+                "DB_USER": "wrong",
+            },
+            clear=True,
+        ):
+            uri = _build_database_uri()
+
+        self.assertEqual(
+            uri,
+            "mysql+pymysql://railway-user:railway-secret"
+            "@mysql.railway.internal:3306/railway",
+        )
+
+    def test_complete_mysql_url_satisfies_deployment_configuration(self):
+        with patch.dict(
+            os.environ,
+            {"MYSQL_URL": "mysql://user:secret@host:3306/railway"},
+            clear=True,
+        ):
+            self.assertTrue(_database_is_configured())
+            self.assertEqual(_missing_database_env_vars(), ())
 
     def test_all_five_database_variables_are_required_for_deployment(self):
         complete_environment = {
@@ -119,7 +178,11 @@ class DatabaseConfigTests(unittest.TestCase):
     def test_railway_public_database_proxy_is_detected(self):
         with patch.dict(
             os.environ,
-            {"DB_HOST": "example.proxy.rlwy.net"},
+            {
+                "MYSQL_URL": (
+                    "mysql://user:secret@example.proxy.rlwy.net:1234/railway"
+                ),
+            },
             clear=True,
         ):
             self.assertTrue(_uses_railway_public_database_proxy())

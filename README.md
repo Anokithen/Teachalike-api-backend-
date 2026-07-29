@@ -29,28 +29,26 @@ pre-deploy container, then starts Gunicorn without repeating schema work.
 Set these variables on the backend service:
 
 ```env
-DB_NAME=${{MySQL.MYSQLDATABASE}}
-DB_HOST=${{MySQL.MYSQLHOST}}
-DB_PASSWORD=${{MySQL.MYSQLPASSWORD}}
-DB_PORT=${{MySQL.MYSQLPORT}}
-DB_USER=${{MySQL.MYSQLUSER}}
+MYSQL_URL=${{MySQL.MYSQL_URL}}
 JWT_SECRET_KEY=replace-with-a-new-random-secret-of-at-least-32-characters
 FRONTEND_ORIGINS=https://your-project.vercel.app
 ```
 
 Use Railway's variable-reference autocomplete because `MySQL` must match the
-database service's exact name. The application builds the PyMySQL connection
-using only `DB_NAME`, `DB_HOST`, `DB_PASSWORD`, `DB_PORT`, and `DB_USER`;
-`MYSQL_URL`, `DATABASE_URL`, and Railway's `MYSQL*` variables are not read
-directly by the backend. It creates and verifies all model tables before
-serving traffic and fails deployment with the exact initialization stage if
-the database is not ready.
+database service's exact name. A complete `MYSQL_URL` is preferred because it
+keeps the host, port, username, password, and database name synchronized.
+`MYSQL_PUBLIC_URL` and a MySQL `DATABASE_URL` are also accepted.
 
-Keep the API and MySQL services in the same Railway project and set `DB_HOST`
-through `${{MySQL.MYSQLHOST}}` when private networking is available. A
-`*.proxy.rlwy.net` public TCP proxy is also supported, so existing Railway
-deployments can continue using their current `DB_HOST`; the backend logs a
-performance warning instead of blocking startup.
+If a URL is unavailable, the backend uses Railway's individual variables
+(`MYSQLDATABASE`, `MYSQLHOST`, `MYSQLPASSWORD`, `MYSQLPORT`, `MYSQLUSER`),
+then falls back to local `DB_NAME`, `DB_HOST`, `DB_PASSWORD`, `DB_PORT`, and
+`DB_USER` variables. A `*.proxy.rlwy.net` public TCP proxy is supported, but
+the private `MYSQL_URL`/`MYSQLHOST` reference is normally faster for services
+in the same Railway project.
+
+The pre-deploy command creates and verifies all model tables before serving
+traffic and fails with the exact initialization stage if the database is not
+ready.
 
 `railway.toml` runs `python -m app.database_setup` once before rollout. The
 web worker deliberately skips automatic table creation on Railway, even if an

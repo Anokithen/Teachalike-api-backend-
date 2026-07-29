@@ -71,39 +71,90 @@ def _is_railway_environment():
     )
 
 
-_DATABASE_ENV_NAMES = (
-    "DB_NAME",
-    "DB_HOST",
-    "DB_PASSWORD",
-    "DB_PORT",
-    "DB_USER",
+_DATABASE_URL_ENV_NAMES = (
+    "MYSQL_URL",
+    "MYSQL_PUBLIC_URL",
+    "DATABASE_URL",
+)
+_DATABASE_VALUE_GROUPS = (
+    ("DB_NAME", ("MYSQLDATABASE", "MYSQL_DATABASE", "DB_NAME")),
+    ("DB_HOST", ("MYSQLHOST", "DB_HOST")),
+    ("DB_PASSWORD", ("MYSQLPASSWORD", "MYSQL_ROOT_PASSWORD", "DB_PASSWORD")),
+    ("DB_PORT", ("MYSQLPORT", "DB_PORT")),
+    ("DB_USER", ("MYSQLUSER", "DB_USER")),
 )
 
 
+def _configured_database_url():
+    """Return the first complete Railway/local database URL."""
+    return _env_value(*_DATABASE_URL_ENV_NAMES)
+
+
 def _missing_database_env_vars():
-    """Return the required database variables that have no usable value."""
+    """Return missing individual fields when no complete URL is configured."""
+    if _configured_database_url():
+        return ()
     return tuple(
-        name for name in _DATABASE_ENV_NAMES if not _env_value(name)
+        display_name
+        for display_name, names in _DATABASE_VALUE_GROUPS
+        if not _env_value(*names)
     )
 
 
 def _database_is_configured():
-    """Return whether every required database variable has a usable value."""
+    """Return whether a URL or every required individual value is available."""
     return not _missing_database_env_vars()
 
 
+def _effective_database_host():
+    """Read the selected host without exposing database credentials."""
+    database_url = _configured_database_url()
+    if database_url:
+        _, separator, remainder = database_url.partition("://")
+        if separator:
+            authority = remainder.split("/", 1)[0].rsplit("@", 1)[-1]
+            return authority.rsplit(":", 1)[0].strip("[]")
+    return _env_value("MYSQLHOST", "DB_HOST")
+
+
 def _uses_railway_public_database_proxy():
-    """Return whether DB_HOST uses Railway's slower public TCP proxy."""
-    return _env_value("DB_HOST").lower().endswith(".proxy.rlwy.net")
+    """Return whether the selected host uses Railway's public TCP proxy."""
+    return _effective_database_host().lower().endswith(".proxy.rlwy.net")
 
 
 def _build_database_uri():
-    """Build the MySQL URI using only the five supported DB variables."""
-    db_user = _env_value("DB_USER", default="root")
-    db_password = _env_value("DB_PASSWORD", default="root123")
-    db_host = _env_value("DB_HOST", default="localhost")
-    db_port = _env_value("DB_PORT", default="3306")
-    db_name = _env_value("DB_NAME", default="teachalike_db")
+    """Build a PyMySQL URI from Railway or local database variables.
+
+    Priority:
+    1. MYSQL_URL, MYSQL_PUBLIC_URL, or DATABASE_URL.
+    2. Railway's individual MYSQL* variables.
+    3. Generic DB_* variables used by local development.
+    """
+    railway_url = _configured_database_url()
+    if railway_url:
+        scheme, separator, remainder = railway_url.partition("://")
+        if not separator or scheme.lower() not in {"mysql", "mysql+pymysql"}:
+            raise ValueError(
+                "Only MySQL connection URLs are supported. Configure "
+                "MYSQL_URL or a mysql:// DATABASE_URL."
+            )
+        return f"mysql+pymysql://{remainder}"
+
+    db_user = _env_value("MYSQLUSER", "DB_USER", default="root")
+    db_password = _env_value(
+        "MYSQLPASSWORD",
+        "MYSQL_ROOT_PASSWORD",
+        "DB_PASSWORD",
+        default="root123",
+    )
+    db_host = _env_value("MYSQLHOST", "DB_HOST", default="localhost")
+    db_port = _env_value("MYSQLPORT", "DB_PORT", default="3306")
+    db_name = _env_value(
+        "MYSQLDATABASE",
+        "MYSQL_DATABASE",
+        "DB_NAME",
+        default="teachalike_db",
+    )
 
     return (
         f"mysql+pymysql://{quote_plus(db_user)}:{quote_plus(db_password)}"
@@ -118,26 +169,28 @@ class Config:
     DATABASE_USES_RAILWAY_PUBLIC_PROXY = (
         _uses_railway_public_database_proxy()
     )
-    DB_USER = _env_value("DB_USER", default="root")
-    DB_PASSWORD = _env_value("DB_PASSWORD", default="root123")
-    DB_HOST = _env_value("DB_HOST", default="localhost")
-    DB_NAME = _env_value("DB_NAME", default="teachalike_db")
-    DB_PORT = _env_value("DB_PORT", default="3306")
+    DB_USER = _env_value("MYSQLUSER", "DB_USER", default="root")
+    DB_PASSWORD = _env_value(
+        "MYSQLPASSWORD",
+        "MYSQL_ROOT_PASSWORD",
+        "DB_PASSWORD",
+        default="root123",
+    )
+    DB_HOST = _env_value("MYSQLHOST", "DB_HOST", default="localhost")
+    DB_NAME = _env_value(
+        "MYSQLDATABASE",
+        "MYSQL_DATABASE",
+        "DB_NAME",
+        default="teachalike_db",
+    )
+    DB_PORT = _env_value("MYSQLPORT", "DB_PORT", default="3306")
 
     SQLALCHEMY_DATABASE_URI = _build_database_uri()
     SQLALCHEMY_TRACK_MODIFICATIONS = False
-    DB_QUERY_TIMEOUT_SECONDS = _positive_int_env(
-        "DB_QUERY_TIMEOUT_SECONDS",
-        30,
-    )
     SQLALCHEMY_ENGINE_OPTIONS = {
         "pool_pre_ping": True,
         "pool_recycle": 280,
-        "connect_args": {
-            "connect_timeout": 5,
-            "read_timeout": DB_QUERY_TIMEOUT_SECONDS,
-            "write_timeout": DB_QUERY_TIMEOUT_SECONDS,
-        },
+        "connect_args": {"connect_timeout": 5},
     }
 
     _configured_jwt_secret = _env_value("JWT_SECRET_KEY")
@@ -145,8 +198,11 @@ class Config:
     JWT_SECRET_KEY = _configured_jwt_secret or secrets.token_urlsafe(48)
 
     # Flask-JWT-Extended reads JWT_ACCESS_TOKEN_EXPIRES specifically.
-    JWT_ACCESS_TOKEN_EXPIRES = timedelta(
-        minutes=int(os.getenv("JWT_ACCESS_TOKEN_EXPIRES_MINUTES", "15"))
+    _access_token_minutes = _env_value("JWT_ACCESS_TOKEN_EXPIRES_MINUTES")
+    JWT_ACCESS_TOKEN_EXPIRES = (
+        timedelta(minutes=int(_access_token_minutes))
+        if _access_token_minutes
+        else timedelta(minutes=15)
     )
     JWT_REFRESH_TOKEN_EXPIRES = timedelta(
         days=int(os.getenv("JWT_REFRESH_TOKEN_EXPIRES_DAYS", "30"))

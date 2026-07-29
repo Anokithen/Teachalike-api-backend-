@@ -170,14 +170,15 @@ def _validate_deployment_config(app):
             ("DB_NAME", "DB_HOST", "DB_PASSWORD", "DB_PORT", "DB_USER"),
         )
         raise RuntimeError(
-            "Database configuration is missing required variable(s): "
+            "Database configuration is missing. Set MYSQL_URL or provide "
+            "the required individual variable(s): "
             f"{', '.join(missing_variables)}."
         )
     if app.config["DATABASE_USES_RAILWAY_PUBLIC_PROXY"]:
         app.logger.warning(
-            "DB_HOST uses Railway's public TCP proxy. The connection is "
-            "supported, but the MySQL service's MYSQLHOST reference is "
-            "usually faster for services in the same Railway project."
+            "The database connection uses Railway's public TCP proxy. It is "
+            "supported, but MYSQL_URL or MYSQLHOST should reference private "
+            "networking when both services are in the same Railway project."
         )
     if app.config["JWT_SECRET_KEY_IS_EPHEMERAL"]:
         raise RuntimeError("JWT_SECRET_KEY must be set to a stable secret.")
