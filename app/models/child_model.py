@@ -52,3 +52,9 @@ class Child(db.Model):
             "reading_level": self.reading_level,
             "created_at": utc_isoformat(self.created_at),
         }
+
+    def set_pin(self, pin):
+        self.child_pin_hash = generate_password_hash(pin)
+
+    def check_pin(self, pin):
+        return bool(self.child_pin_hash) and check_password_hash(self.child_pin_hash, pin)
