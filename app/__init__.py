@@ -146,3 +146,51 @@ def create_app():
         return jsonify({"error": f"The uploaded file must be smaller than {limit_mb} MB."}), 413
 
     return app
+
+
+def _validate_runtime_config(app):
+    """Fail early when a Railway deployment is missing required secrets."""
+    if not app.config["IS_RAILWAY"]:
+        return
+    if not app.config["DATABASE_IS_CONFIGURED"]:
+        raise RuntimeError(
+            "Railway database configuration is missing. Reference MYSQL_URL "
+            "from the MySQL service on the API service."
+        )
+    if app.config["JWT_SECRET_KEY_IS_EPHEMERAL"]:
+        raise RuntimeError(
+            "JWT_SECRET_KEY must be set to a stable secret on Railway."
+        )
+    if len(app.config["JWT_SECRET_KEY"]) < 32:
+        raise RuntimeError("JWT_SECRET_KEY must contain at least 32 characters.")
+
+
+def _prepare_database(app):
+    """Connect, create/upgrade the schema, and retry brief Railway races."""
+    attempts = app.config["DATABASE_STARTUP_MAX_ATTEMPTS"]
+    retry_seconds = app.config["DATABASE_STARTUP_RETRY_SECONDS"]
+
+    for attempt in range(1, attempts + 1):
+        try:
+            if app.config["AUTO_CREATE_TABLES"]:
+                db.create_all()
+                _ensure_voice_profile_schema()
+                _ensure_profile_image_schema()
+                _ensure_book_schema()
+                _ensure_book_narration_schema()
+            _verify_database_ready()
+            return
+        except Exception as exc:
+            db.session.rollback()
+            if attempt == attempts:
+                raise RuntimeError(
+                    f"Database initialization failed after {attempts} attempt(s)."
+                ) from exc
+            app.logger.warning(
+                "Database initialization attempt %s/%s failed; retrying in %ss: %s",
+                attempt,
+                attempts,
+                retry_seconds,
+                exc,
+            )
+            time.sleep(retry_seconds)
