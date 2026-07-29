@@ -109,3 +109,190 @@ def _build_database_uri():
         f"mysql+pymysql://{quote_plus(db_user)}:{quote_plus(db_password)}"
         f"@{db_host}:{db_port}/{quote_plus(db_name)}"
     )
+
+
+class Config:
+    IS_RAILWAY = _is_railway_environment()
+    DATABASE_IS_CONFIGURED = bool(
+        _env_value("MYSQL_URL", "DATABASE_URL", "MYSQL_PUBLIC_URL")
+        or _env_value("MYSQLHOST", "DB_HOST")
+    )
+    DB_USER = os.getenv("DB_USER")
+    DB_PASSWORD = os.getenv("DB_PASSWORD")
+    DB_HOST = os.getenv("DB_HOST")
+    DB_NAME = os.getenv("DB_NAME")
+    DB_PORT = os.getenv("DB_PORT")
+
+    SQLALCHEMY_DATABASE_URI = _build_database_uri()
+    SQLALCHEMY_TRACK_MODIFICATIONS = False
+    SQLALCHEMY_ENGINE_OPTIONS = {
+
+        "pool_pre_ping": True,
+        "pool_recycle": 280,
+        "connect_args": {"connect_timeout": 5},
+    }
+
+    _configured_jwt_secret = _env_value("JWT_SECRET_KEY")
+    JWT_SECRET_KEY_IS_EPHEMERAL = not bool(_configured_jwt_secret)
+    JWT_SECRET_KEY = _configured_jwt_secret or secrets.token_urlsafe(48)
+
+    _access_token_minutes = _env_value("JWT_ACCESS_TOKEN_EXPIRES_MINUTES")
+    JWT_ACCESS_TOKEN_EXPIRES = (
+        timedelta(minutes=int(_access_token_minutes))
+        if _access_token_minutes
+        else timedelta(minutes=15)
+    )
+    JWT_REFRESH_TOKEN_EXPIRES = timedelta(
+        days=int(os.getenv("JWT_REFRESH_TOKEN_EXPIRES_DAYS", "30"))
+    )
+    _frontend_origins = _env_value("FRONTEND_ORIGINS")
+    _frontend_origin_values = (_frontend_origins or "*").split(",")
+    FRONTEND_ORIGINS = [
+        origin.strip().rstrip("/")
+        for origin in _frontend_origin_values
+        if origin.strip()
+    ] or ["*"]
+    TRUST_PROXY_HOPS = int(
+        _env_value(
+            "TRUST_PROXY_HOPS",
+            default="1" if IS_RAILWAY else "0",
+        )
+    )
+    _trusted_hosts = _env_value("TRUSTED_HOSTS")
+    TRUSTED_HOSTS = (
+        [host.strip() for host in _trusted_hosts.split(",") if host.strip()]
+        if _trusted_hosts
+        else None
+    )
+    AUTO_CREATE_TABLES = _boolean_env("AUTO_CREATE_TABLES", True)
+    DATABASE_STARTUP_MAX_ATTEMPTS = _positive_int_env(
+        "DATABASE_STARTUP_MAX_ATTEMPTS",
+        5 if IS_RAILWAY else 1,
+    )
+    DATABASE_STARTUP_RETRY_SECONDS = _nonnegative_float_env(
+        "DATABASE_STARTUP_RETRY_SECONDS",
+        2,
+    )
+
+    CLOUDINARY_CLOUD_NAME = _env_value("CLOUDINARY_CLOUD_NAME")
+    CLOUDINARY_API_KEY = _env_value("CLOUDINARY_API_KEY")
+    CLOUDINARY_API_SECRET = _env_value("CLOUDINARY_API_SECRET")
+    CLOUDINARY_ROOT_FOLDER = _env_value(
+        "CLOUDINARY_ROOT_FOLDER",
+        default="teachalike",
+    )
+    CLOUDINARY_DELIVERY_TIMEOUT_SECONDS = _positive_int_env(
+        "CLOUDINARY_DELIVERY_TIMEOUT_SECONDS",
+        60,
+    )
+    CLOUDINARY_UPLOAD_TIMEOUT_SECONDS = _positive_int_env(
+        "CLOUDINARY_UPLOAD_TIMEOUT_SECONDS",
+        180,
+    )
+
+    # Keep this server-side. Never expose the ElevenLabs key through Next.js
+    # public environment variables or return it from an API response.
+    ELEVENLABS_API_KEY = _env_value("ELEVENLABS_API_KEY")
+    ELEVENLABS_MODEL_ID = _env_value("ELEVENLABS_MODEL_ID", default="eleven_multilingual_v2")
+    ELEVENLABS_OUTPUT_FORMAT = _env_value("ELEVENLABS_OUTPUT_FORMAT", default="mp3_44100_128")
+    ELEVENLABS_LANGUAGE_CODE = _env_value("ELEVENLABS_LANGUAGE_CODE")
+    ELEVENLABS_MAX_CHARS_PER_CHUNK = int(_env_value("ELEVENLABS_MAX_CHARS_PER_CHUNK", default="4500"))
+    ELEVENLABS_REQUEST_TIMEOUT = int(_env_value("ELEVENLABS_REQUEST_TIMEOUT", default="120"))
+    FFMPEG_BINARY = _env_value("FFMPEG_BINARY")
+
+    GEMINI_API_KEY = _env_value("GEMINI_API_KEY", "GOOGLE_API_KEY")
+    GEMINI_MODEL = _env_value("GEMINI_MODEL", default="gemini-2.5-flash")
+    GEMINI_REQUEST_TIMEOUT = int(_env_value("GEMINI_REQUEST_TIMEOUT", default="45"))
+
+    # Groq model discovery and chat calls stay server-side. NVIDIA/Gemini remain
+    # available as legacy provider overrides for existing deployments.
+    BOOK_GENERATION_PROVIDER = _env_value("BOOK_GENERATION_PROVIDER", default="groq").lower()
+    GROQ_API_KEY = _env_value("GROQ_API_KEY")
+    GROQ_API_URL = _env_value("GROQ_API_URL", default="https://api.groq.com/openai/v1")
+    GROQ_MODEL = _env_value("GROQ_MODEL", default="openai/gpt-oss-120b")
+    GROQ_REQUEST_TIMEOUT = int(_env_value("GROQ_REQUEST_TIMEOUT", default="60"))
+    NVIDIA_API_KEY = _env_value("NVIDIA_API_KEY", "NVAPI_KEY")
+    NVIDIA_API_URL = _env_value(
+        "NVIDIA_API_URL",
+        default="https://integrate.api.nvidia.com/v1/chat/completions",
+    )
+    NVIDIA_MODEL = _env_value("NVIDIA_MODEL", default="openai/gpt-oss-120b")
+    # Keep the upstream AI call below the Gunicorn/platform request window so
+    # clients receive a useful error instead of waiting until the connection
+    # is terminated by the deployment proxy.
+    NVIDIA_REQUEST_TIMEOUT = int(_env_value("NVIDIA_REQUEST_TIMEOUT", default="120"))
+
+    # NVIDIA ASR is used server-side for pronunciation recordings. Keep this
+    # separate so the hosted ASR endpoint can differ from chat completions.
+    NVIDIA_ASR_API_KEY = _env_value("NVIDIA_ASR_API_KEY", "NVIDIA_API_KEY", "NVAPI_KEY")
+    NVIDIA_ASR_API_URL = _env_value(
+        "NVIDIA_ASR_API_URL",
+        default="https://1598d209-5e27-4d3c-8079-4751568b1081.invocation.api.nvcf.nvidia.com/v1/audio/transcriptions",
+    )
+    NVIDIA_ASR_LANGUAGE = _env_value("NVIDIA_ASR_LANGUAGE", default="en-US")
+    NVIDIA_ASR_REQUEST_TIMEOUT = int(_env_value("NVIDIA_ASR_REQUEST_TIMEOUT", default="45"))
+    NVIDIA_PRONUNCIATION_API_KEY = _env_value(
+        "NVIDIA_PRONUNCIATION_API_KEY",
+        "NVIDIA_ASR_API_KEY",
+        "NVIDIA_API_KEY",
+        "NVAPI_KEY",
+    )
+    NVIDIA_PRONUNCIATION_REQUEST_TIMEOUT = int(
+        _env_value("NVIDIA_PRONUNCIATION_REQUEST_TIMEOUT", default="20")
+    )
+
+    VOSK_MODEL_PATH = os.getenv(
+        "VOSK_MODEL_PATH",
+        os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "vosk-model-small-en-us-0.15"),
+    )
+
+    # Must accommodate the largest supported upload endpoint. Individual
+    # routes still enforce their narrower per-asset limits below.
+    MAX_CONTENT_LENGTH = (
+        _positive_int_env("MAX_CONTENT_LENGTH_MB", 1000) * 1024 * 1024
+    )
+
+    # Per-asset limits are kept separate from Flask's request-wide limit so
+    # each upload endpoint can return the correct validation response.
+    MAX_PROFILE_IMAGE_SIZE_MB = _positive_int_env(
+        "MAX_PROFILE_IMAGE_SIZE_MB", 10
+    )
+    MAX_CHILD_IMAGE_SIZE_MB = _positive_int_env(
+        "MAX_CHILD_IMAGE_SIZE_MB", 10
+    )
+    MAX_VOICE_PROFILE_SIZE_MB = _positive_int_env(
+        "MAX_VOICE_PROFILE_SIZE_MB", 50
+    )
+    MAX_BOOK_AUDIO_SIZE_MB = _positive_int_env(
+        "MAX_BOOK_AUDIO_SIZE_MB", 250
+    )
+    MAX_BOOK_VIDEO_SIZE_MB = _positive_int_env(
+        "MAX_BOOK_VIDEO_SIZE_MB", 1000
+    )
+    MAX_JSON_BODY_SIZE_BYTES = int(
+        _env_value("MAX_JSON_BODY_SIZE_BYTES", default=str(1024 * 1024))
+    )
+    LOGIN_RATE_LIMIT_ATTEMPTS = int(
+        _env_value("LOGIN_RATE_LIMIT_ATTEMPTS", default="10")
+    )
+    LOGIN_RATE_LIMIT_WINDOW_SECONDS = int(
+        _env_value("LOGIN_RATE_LIMIT_WINDOW_SECONDS", default="900")
+    )
+    REGISTER_RATE_LIMIT_ATTEMPTS = int(
+        _env_value("REGISTER_RATE_LIMIT_ATTEMPTS", default="20")
+    )
+    REGISTER_RATE_LIMIT_WINDOW_SECONDS = int(
+        _env_value("REGISTER_RATE_LIMIT_WINDOW_SECONDS", default="3600")
+    )
+    PIN_RATE_LIMIT_ATTEMPTS = int(
+        _env_value("PIN_RATE_LIMIT_ATTEMPTS", default="5")
+    )
+    PIN_RATE_LIMIT_WINDOW_SECONDS = int(
+        _env_value("PIN_RATE_LIMIT_WINDOW_SECONDS", default="300")
+    )
+    ACCOUNT_PASSWORD_RATE_LIMIT_ATTEMPTS = int(
+        _env_value("ACCOUNT_PASSWORD_RATE_LIMIT_ATTEMPTS", default="5")
+    )
+    ACCOUNT_PASSWORD_RATE_LIMIT_WINDOW_SECONDS = int(
+        _env_value("ACCOUNT_PASSWORD_RATE_LIMIT_WINDOW_SECONDS", default="300")
+    )
