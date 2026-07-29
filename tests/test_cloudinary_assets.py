@@ -817,3 +817,428 @@ class AssetEndpointTests(unittest.TestCase):
             "users_voiceprofiles",
             upload.call_args.kwargs["public_id"],
         )
+
+    @patch(
+        "app.controllers.book_narration_controller._enqueue_narration",
+        return_value=True,
+    )
+    def test_background_narration_starts_with_canonical_public_id(self, _enqueue):
+        profile = VoiceProfile(
+            parent_id=self.owner.id,
+            label="Narrator",
+            voice_sample_url="https://example.test/voice.wav",
+            cloudinary_public_id="voice",
+            elevenlabs_voice_id="elevenlabs",
+            status=STATUS_READY,
+        )
+        self.book.text_content = "A short story."
+        db.session.add(profile)
+        db.session.commit()
+        response = self.client.post(
+            f"/api/books/{self.book.id}/narrations",
+            headers=self._headers(self.owner),
+            json={"voice_profile_id": profile.id},
+        )
+        self.assertEqual(response.status_code, 201, response.json)
+        generation = db.session.get(
+            BookNarration,
+            response.json["book_narration"]["id"],
+        )
+        self.assertEqual(
+            generation.cloudinary_public_id,
+            (
+                f"teachalike/{self.owner.id}/Audio/Generated_Books_Audio/"
+                f"{self.book.id}_same_name/voice_{profile.id}_{self.book.id}_{generation.id}"
+            ),
+        )
+
+    def test_background_worker_persists_asset_metadata(self):
+        from app.controllers.book_narration_controller import _generate_narration
+
+        profile = VoiceProfile(
+            parent_id=self.owner.id,
+            label="Worker voice",
+            voice_sample_url="https://example.test/voice.wav",
+            cloudinary_public_id="worker-voice",
+            elevenlabs_voice_id="elevenlabs-worker",
+            status=STATUS_READY,
+        )
+        self.book.text_content = "Worker story."
+        db.session.add(profile)
+        db.session.flush()
+        generation = BookNarration(
+            book_id=self.book.id,
+            voice_profile_id=profile.id,
+            status="processing",
+            cloudinary_public_id="pending-public-id",
+        )
+        db.session.add(generation)
+        db.session.commit()
+        metadata = self._upload_result(
+            io.BytesIO(MP3),
+            get_generated_book_audio_folder(
+                self.owner.id,
+                self.book.id,
+                self.book.title,
+            ),
+            resource_type="video",
+            public_id=(
+                f"teachalike/{self.owner.id}/Audio/Generated_Books_Audio/"
+                f"{self.book.id}_same_name/"
+                f"voice_{profile.id}_{self.book.id}_{generation.id}"
+            ),
+            delivery_type="authenticated",
+            format="mp3",
+        )
+        with (
+            patch(
+                "app.controllers.book_narration_controller.synthesize_narration"
+            ),
+            patch(
+                "app.controllers.book_narration_controller.upload_book_narration",
+                return_value=metadata,
+            ),
+        ):
+            _generate_narration(self.app, generation.id)
+
+        db.session.expire_all()
+        persisted = db.session.get(BookNarration, generation.id)
+        self.assertEqual(persisted.status, STATUS_READY)
+        asset = Asset.query.filter_by(
+            generation_id=generation.id,
+            asset_category=GENERATED_BOOK_AUDIO,
+        ).one()
+        self.assertEqual(asset.cloudinary_delivery_type, "authenticated")
+        self.assertEqual(asset.duration_seconds, 1.5)
+
+    @patch("app.controllers.asset_controller.delete_asset")
+    def test_referenced_voice_profile_cannot_be_deleted(self, destroy):
+        profile = VoiceProfile(
+            parent_id=self.owner.id,
+            label="In use",
+            voice_sample_url="https://example.test/voice.wav",
+            cloudinary_public_id="voice-in-use",
+            status=STATUS_READY,
+        )
+        db.session.add(profile)
+        db.session.flush()
+        narration = BookNarration(
+            book_id=self.book.id,
+            voice_profile_id=profile.id,
+            status=STATUS_READY,
+            narration_audio_url="https://example.test/narration.mp3",
+            cloudinary_public_id="narration-in-use",
+        )
+        db.session.add(narration)
+        db.session.commit()
+        response = self.client.delete(
+            f"/api/voice-profiles/{profile.id}",
+            headers=self._headers(self.owner),
+        )
+        self.assertEqual(response.status_code, 422, response.json)
+        destroy.assert_not_called()
+
+    def test_voice_audio_is_streamed_through_api_with_range_support(self):
+        profile = VoiceProfile(
+            parent_id=self.owner.id,
+            label="Playback",
+            voice_sample_url="https://res.cloudinary.test/private/voice.wav",
+            cloudinary_public_id="private-voice",
+            status=STATUS_READY,
+        )
+        db.session.add(profile)
+        db.session.commit()
+        upstream = MagicMock()
+        upstream.status_code = 206
+        upstream.headers = {
+            "Content-Type": "audio/wav",
+            "Content-Length": "4",
+            "Content-Range": "bytes 0-3/8",
+            "Accept-Ranges": "bytes",
+        }
+        upstream.iter_content.return_value = iter([b"RIFF"])
+        headers = {
+            **self._headers(self.owner),
+            "Range": "bytes=0-3",
+        }
+        with (
+            patch(
+                "app.services.cloudinary_service.signed_voice_delivery_url",
+                return_value="https://res.cloudinary.test/signed.wav",
+            ),
+            patch(
+                "app.services.cloudinary_service.requests.get",
+                return_value=upstream,
+            ) as get,
+        ):
+            response = self.client.get(
+                f"/api/voice-profiles/{profile.id}/audio",
+                headers=headers,
+            )
+        self.assertEqual(response.status_code, 206)
+        self.assertEqual(response.data, b"RIFF")
+        self.assertEqual(response.content_type, "audio/wav")
+        self.assertEqual(response.headers["Content-Range"], "bytes 0-3/8")
+        self.assertNotIn("Location", response.headers)
+        self.assertEqual(
+            get.call_args.kwargs["headers"],
+            {"Range": "bytes=0-3"},
+        )
+        response.close()
+
+    def test_narration_audio_is_streamed_through_api(self):
+        profile = VoiceProfile(
+            parent_id=self.owner.id,
+            label="Narration playback",
+            voice_sample_url="https://res.cloudinary.test/private/voice.wav",
+            cloudinary_public_id="private-voice-narration",
+            status=STATUS_READY,
+        )
+        db.session.add(profile)
+        db.session.flush()
+        narration = BookNarration(
+            book_id=self.book.id,
+            voice_profile_id=profile.id,
+            status=STATUS_READY,
+            narration_audio_url="https://res.cloudinary.test/private/story.mp3",
+            cloudinary_public_id="private-story",
+        )
+        db.session.add(narration)
+        db.session.commit()
+        upstream = MagicMock()
+        upstream.status_code = 200
+        upstream.headers = {
+            "Content-Type": "audio/mpeg",
+            "Content-Length": str(len(MP3)),
+            "Accept-Ranges": "bytes",
+        }
+        upstream.iter_content.return_value = iter([MP3])
+        with (
+            patch(
+                "app.services.cloudinary_service.signed_voice_delivery_url",
+                return_value="https://res.cloudinary.test/signed.mp3",
+            ),
+            patch(
+                "app.services.cloudinary_service.requests.get",
+                return_value=upstream,
+            ),
+        ):
+            response = self.client.get(
+                f"/api/book-narrations/{narration.id}/audio",
+                headers=self._headers(self.owner),
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, MP3)
+        self.assertEqual(response.content_type, "audio/mpeg")
+        self.assertNotIn("Location", response.headers)
+        response.close()
+
+    def test_private_audio_upstream_error_is_sanitized(self):
+        profile = VoiceProfile(
+            parent_id=self.owner.id,
+            label="Unavailable playback",
+            voice_sample_url="https://res.cloudinary.test/private/voice.wav",
+            cloudinary_public_id="unavailable-private-voice",
+            status=STATUS_READY,
+        )
+        db.session.add(profile)
+        db.session.commit()
+        upstream = MagicMock()
+        upstream.status_code = 403
+        upstream.headers = {}
+        with (
+            patch(
+                "app.services.cloudinary_service.signed_voice_delivery_url",
+                return_value="https://res.cloudinary.test/signed.wav",
+            ),
+            patch(
+                "app.services.cloudinary_service.requests.get",
+                return_value=upstream,
+            ),
+        ):
+            response = self.client.get(
+                f"/api/voice-profiles/{profile.id}/audio",
+                headers=self._headers(self.owner),
+            )
+        self.assertEqual(response.status_code, 503)
+        self.assertNotIn("403", response.get_data(as_text=True))
+        upstream.close.assert_called_once()
+
+    @patch("app.controllers.asset_controller.upload_asset")
+    def test_admin_video_upload_validates_book(self, upload):
+        upload.side_effect = self._upload_result
+        missing = self.client.post(
+            "/api/admin/books/999/videos",
+            headers=self._headers(self.admin),
+            data={"file": (io.BytesIO(MP4), "video.mp4")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(missing.status_code, 404)
+        response = self.client.post(
+            f"/api/admin/books/{self.book.id}/videos",
+            headers=self._headers(self.admin),
+            data={"file": (io.BytesIO(MP4), "video.mp4")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(response.status_code, 201, response.json)
+        self.assertEqual(
+            upload.call_args.args[1],
+            (
+                f"teachalike/{self.admin.id}/Video/{self.admin.id}/"
+                f"{self.book.id}_same_name"
+            ),
+        )
+        self.assertEqual(
+            response.json["data"]["duration_seconds"],
+            1.5,
+        )
+        self.assertEqual(
+            db.session.get(Book, self.book.id).video_url,
+            response.json["data"]["url"],
+        )
+
+    def test_legacy_book_media_endpoint_rejects_unscoped_video(self):
+        response = self.client.post(
+            "/api/admin/book-media",
+            headers=self._headers(self.admin),
+            data={
+                "file": (io.BytesIO(MP4), "video.mp4"),
+                "media_type": "video",
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(response.status_code, 422, response.json)
+
+    @patch("app.services.cloudinary_service.upload_asset")
+    def test_legacy_book_image_upload_uses_user_root(self, upload):
+        upload.side_effect = self._upload_result
+        response = self.client.post(
+            "/api/admin/book-media",
+            headers=self._headers(self.admin),
+            data={
+                "file": (io.BytesIO(PNG), "cover.png"),
+                "media_type": "image",
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(response.status_code, 201, response.json)
+        self.assertEqual(
+            upload.call_args.args[1],
+            f"teachalike/{self.admin.id}/Image/Book_media",
+        )
+        self.assertNotIn("book_media/", upload.call_args.args[1])
+
+    @patch("app.services.cloudinary_service._cloudinary_modules")
+    def test_authenticated_delivery_option_reaches_sdk(self, modules):
+        uploader = MagicMock()
+        uploader.upload.return_value = {
+            "asset_id": "sdk-asset",
+            "public_id": "voice_profile_1",
+            "secure_url": "https://res.cloudinary.test/authenticated/file.wav",
+            "resource_type": "video",
+            "type": "authenticated",
+            "asset_folder": "teachalike/1/Audio/Voice_profiles",
+        }
+        modules.return_value = SimpleNamespace(
+            config=MagicMock(), uploader=uploader
+        )
+        result = upload_asset(
+            io.BytesIO(WAV),
+            "teachalike/1/Audio/Voice_profiles",
+            resource_type="video",
+            public_id="voice_profile_1",
+            delivery_type="authenticated",
+        )
+        self.assertEqual(result["delivery_type"], "authenticated")
+        self.assertEqual(
+            uploader.upload.call_args.kwargs["type"], "authenticated"
+        )
+        self.assertEqual(
+            uploader.upload.call_args.kwargs["asset_folder"],
+            "teachalike/1/Audio/Voice_profiles",
+        )
+        self.assertEqual(
+            uploader.upload.call_args.kwargs["timeout"],
+            self.app.config["CLOUDINARY_UPLOAD_TIMEOUT_SECONDS"],
+        )
+        self.assertNotIn("folder", uploader.upload.call_args.kwargs)
+
+    def test_cross_user_asset_read_is_hidden(self):
+        asset = Asset(
+            owner_user_id=self.owner.id,
+            asset_category=USER_PROFILE_IMAGE,
+            cloudinary_asset_id="asset-private",
+            cloudinary_public_id="private",
+            cloudinary_secure_url="https://example.test/private",
+            cloudinary_resource_type="image",
+            cloudinary_delivery_type="upload",
+            cloudinary_asset_folder="teachalike/1/Image/Profile",
+        )
+        db.session.add(asset)
+        db.session.commit()
+        response = self.client.get(
+            f"/api/assets/{asset.id}", headers=self._headers(self.other)
+        )
+        self.assertEqual(response.status_code, 404)
+        delete_response = self.client.delete(
+            f"/api/assets/{asset.id}",
+            headers=self._headers(self.other),
+        )
+        self.assertEqual(delete_response.status_code, 404)
+
+    @patch("app.controllers.asset_controller.delete_asset")
+    def test_delete_is_idempotent_upstream_and_marks_row(self, destroy):
+        destroy.return_value = "not found"
+        asset = Asset(
+            owner_user_id=self.owner.id,
+            asset_category=USER_PROFILE_IMAGE,
+            cloudinary_asset_id="asset-delete",
+            cloudinary_public_id="delete-me",
+            cloudinary_secure_url="https://example.test/delete",
+            cloudinary_resource_type="image",
+            cloudinary_delivery_type="upload",
+            cloudinary_asset_folder="teachalike/1/Image/Profile",
+        )
+        db.session.add(asset)
+        db.session.commit()
+        response = self.client.delete(
+            f"/api/assets/{asset.id}", headers=self._headers(self.owner)
+        )
+        self.assertEqual(response.status_code, 200, response.json)
+        self.assertIsNotNone(db.session.get(Asset, asset.id).deleted_at)
+        second = self.client.delete(
+            f"/api/assets/{asset.id}", headers=self._headers(self.owner)
+        )
+        self.assertEqual(second.status_code, 200, second.json)
+        destroy.assert_called_once_with("delete-me", "image", "upload")
+
+    @patch("app.controllers.asset_controller.delete_asset")
+    def test_profile_asset_delete_clears_related_account_fields(self, destroy):
+        destroy.return_value = "ok"
+        self.owner.profile_image_url = "https://example.test/profile"
+        self.owner.profile_image_public_id = "profile-public-id"
+        asset = Asset(
+            owner_user_id=self.owner.id,
+            asset_category=USER_PROFILE_IMAGE,
+            active_slot=f"user:{self.owner.id}:profile",
+            cloudinary_asset_id="asset-profile-delete",
+            cloudinary_public_id="profile-public-id",
+            cloudinary_secure_url="https://example.test/profile",
+            cloudinary_resource_type="image",
+            cloudinary_delivery_type="upload",
+            cloudinary_asset_folder=f"teachalike/{self.owner.id}/Image/Profile",
+        )
+        db.session.add(asset)
+        db.session.commit()
+        response = self.client.delete(
+            f"/api/assets/{asset.id}", headers=self._headers(self.owner)
+        )
+        self.assertEqual(response.status_code, 200, response.json)
+        db.session.refresh(self.owner)
+        self.assertIsNone(self.owner.profile_image_url)
+        self.assertIsNone(self.owner.profile_image_public_id)
+        self.assertIsNone(db.session.get(Asset, asset.id).active_slot)
+
+
+if __name__ == "__main__":
+    unittest.main()
