@@ -92,3 +92,45 @@ def _to_wav(source, destination):
         raise TTSError("The reference voice recording could not be converted for XTTS.") from exc
     except subprocess.TimeoutExpired as exc:
         raise TTSError("The reference voice recording took too long to convert.") from exc
+
+
+@lru_cache(maxsize=2)
+def _load_model(model_name, device, cache_dir):
+    """Load and retain the expensive model once per web-process configuration."""
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+        os.environ.setdefault("TTS_HOME", cache_dir)
+        # Numba (used transitively by librosa) otherwise tries to cache beside
+        # its installed package, which may be read-only in containers.
+        numba_cache_dir = os.path.join(cache_dir, "numba-cache")
+        os.makedirs(numba_cache_dir, exist_ok=True)
+        os.environ.setdefault("NUMBA_CACHE_DIR", numba_cache_dir)
+        matplotlib_cache_dir = os.path.join(cache_dir, "matplotlib-cache")
+        os.makedirs(matplotlib_cache_dir, exist_ok=True)
+        os.environ.setdefault("MPLCONFIGDIR", matplotlib_cache_dir)
+        from TTS.api import TTS  # Keep Flask bootable until narration is requested.
+
+        model = TTS(model_name=model_name, progress_bar=False)
+        return model.to(device) if device else model
+    except ImportError as exc:
+        raise TTSError("Coqui TTS is not installed. Install the API requirements and redeploy.") from exc
+    except Exception as exc:
+        raise TTSError("Coqui model files could not be loaded. Check TTS model settings and server storage.") from exc
+
+
+def _combine_wav_files(paths, destination):
+    try:
+        with wave.open(str(paths[0]), "rb") as first:
+            params = first.getparams()
+            frames = [first.readframes(first.getnframes())]
+        for path in paths[1:]:
+            with wave.open(str(path), "rb") as part:
+                if (part.getnchannels(), part.getsampwidth(), part.getframerate()) != (params.nchannels, params.sampwidth, params.framerate):
+                    raise TTSError("XTTS returned incompatible audio chunks.")
+                frames.append(part.readframes(part.getnframes()))
+        with wave.open(str(destination), "wb") as output:
+            output.setparams(params)
+            for frame_data in frames:
+                output.writeframes(frame_data)
+    except (wave.Error, OSError) as exc:
+        raise TTSError("XTTS generated audio that could not be combined.") from exc
