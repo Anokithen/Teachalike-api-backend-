@@ -72,6 +72,27 @@ class RailwayConfigTests(unittest.TestCase):
             "@mysql.railway.internal:3306/railway",
         )
 
+    def test_malformed_mysql_url_does_not_block_db_variable_fallback(self):
+        with patch.dict(
+            os.environ,
+            {
+                "MYSQL_URL": "proxy.example:12491",
+                "DB_USER": "root",
+                "DB_PASSWORD": "secret",
+                "DB_HOST": "working.proxy.example",
+                "DB_PORT": "12491",
+                "DB_NAME": "railway",
+            },
+            clear=True,
+        ):
+            uri = _build_database_uri()
+
+        self.assertEqual(
+            uri,
+            "mysql+pymysql://root:secret"
+            "@working.proxy.example:12491/railway",
+        )
+
 
 class ReadinessTests(unittest.TestCase):
     def setUp(self):

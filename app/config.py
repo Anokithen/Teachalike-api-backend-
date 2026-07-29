@@ -71,28 +71,27 @@ def _is_railway_environment():
     )
 
 
-def _build_database_uri():
-    # Railway's MySQL plugin exposes a ready-made connection string. Prefer
-    # the private URL, then DATABASE_URL, and use the public proxy only as a
-    # final URL fallback.
-    railway_url = (
-        os.getenv("MYSQL_URL")
-        or os.getenv("DATABASE_URL")
-        or os.getenv("MYSQL_PUBLIC_URL")
-    )
-    if railway_url:
-        railway_url = railway_url.strip().strip("'\"")
+def _railway_database_url():
+    """Return the first complete Railway MySQL URL, ignoring malformed values."""
+    for name in ("MYSQL_URL", "DATABASE_URL", "MYSQL_PUBLIC_URL"):
+        railway_url = os.getenv(name, "").strip().strip("'\"")
         if railway_url.startswith("mysql://"):
-            railway_url = railway_url.replace(
+            return railway_url.replace(
                 "mysql://",
                 "mysql+pymysql://",
                 1,
             )
-        if not railway_url.startswith("mysql+pymysql://"):
-            raise ValueError(
-                "Only MySQL connection URLs are supported. Configure MYSQL_URL "
-                "or a mysql:// DATABASE_URL."
-            )
+        if railway_url.startswith("mysql+pymysql://"):
+            return railway_url
+    return ""
+
+
+def _build_database_uri():
+    # Railway's MySQL plugin exposes a ready-made connection string. Prefer
+    # the private URL, then DATABASE_URL, and use the public proxy only as a
+    # final URL fallback. A malformed value must not block the DB_* fallback.
+    railway_url = _railway_database_url()
+    if railway_url:
         return railway_url
 
     # Otherwise, build the URL from Railway's MYSQL* variables or the DB_*
@@ -120,8 +119,9 @@ def _build_database_uri():
 class Config:
     IS_RAILWAY = _is_railway_environment()
     DATABASE_IS_CONFIGURED = bool(
-        _env_value("MYSQL_URL", "DATABASE_URL", "MYSQL_PUBLIC_URL")
-        or _env_value("MYSQLHOST", "DB_HOST")
+        _railway_database_url()
+        or os.getenv("MYSQLHOST")
+        or os.getenv("DB_HOST")
     )
     DB_USER = os.getenv("DB_USER")
     DB_PASSWORD = os.getenv("DB_PASSWORD")
