@@ -47,3 +47,14 @@ def _as_list(value, field_name):
     if not isinstance(value, list):
         return [], f"{field_name} must be an array."
     return value, None
+
+
+def _get_by_id(model, value):
+    """Safely resolve an integer primary key from untrusted sync JSON."""
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        return None
+    try:
+        identifier = int(value)
+    except (TypeError, ValueError):
+        return None
+    return db.session.get(model, identifier) if identifier > 0 else None
