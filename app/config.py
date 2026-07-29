@@ -55,3 +55,17 @@ def _boolean_env(name, default):
     if raw_value in {"0", "false", "no", "off"}:
         return False
     raise ValueError(f"{name} must be true or false.")
+
+
+def _is_railway_environment():
+    """Detect current and legacy Railway runtime environment markers."""
+    return any(
+        _env_value(name)
+        for name in (
+            "RAILWAY_ENVIRONMENT_ID",
+            "RAILWAY_ENVIRONMENT_NAME",
+            "RAILWAY_SERVICE_ID",
+            "RAILWAY_PROJECT_ID",
+            "RAILWAY_ENVIRONMENT",
+        )
+    )
