@@ -148,3 +148,135 @@ class SecurityTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 201, response.json)
         self.assertEqual(response.json["parent"]["role"], ROLE_PARENT)
+
+    def test_login_rate_limit_blocks_brute_force(self):
+        for _ in range(3):
+            response = self._post(
+                "/api/auth/login",
+                json={"email": self.parent.email, "password": "WrongPass123!"},
+            )
+            self.assertEqual(response.status_code, 401)
+
+        blocked = self._post(
+            "/api/auth/login",
+            json={"email": self.parent.email, "password": "SecurePass123!"},
+        )
+        self.assertEqual(blocked.status_code, 429)
+        self.assertIn("Retry-After", blocked.headers)
+
+    def test_registration_rate_limit_blocks_account_creation_abuse(self):
+        self.app.config["REGISTER_RATE_LIMIT_ATTEMPTS"] = 2
+        for index in range(2):
+            response = self._post(
+                "/api/auth/register",
+                json={
+                    "name": f"New {index}",
+                    "email": f"new{index}@example.com",
+                    "password": "SecurePass123!",
+                },
+            )
+            self.assertEqual(response.status_code, 201, response.json)
+
+        blocked = self._post(
+            "/api/auth/register",
+            json={
+                "name": "Blocked",
+                "email": "blocked@example.com",
+                "password": "SecurePass123!",
+            },
+        )
+        self.assertEqual(blocked.status_code, 429)
+        self.assertIn("Retry-After", blocked.headers)
+
+    def test_logout_revokes_access_and_refresh_tokens(self):
+        login = self._post(
+            "/api/auth/login",
+            json={"email": self.parent.email, "password": "SecurePass123!"},
+        )
+        self.assertEqual(login.status_code, 200, login.json)
+        access_token = login.json["access_token"]
+        refresh_token = login.json["refresh_token"]
+
+        logout = self._post(
+            "/api/auth/logout",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"refresh_token": refresh_token},
+        )
+        self.assertEqual(logout.status_code, 200, logout.json)
+
+        access_response = self.client.get(
+            "/api/parents/me",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        self.assertEqual(access_response.status_code, 401)
+        refresh_response = self._post(
+            "/api/auth/refresh",
+            headers={"Authorization": f"Bearer {refresh_token}"},
+        )
+        self.assertEqual(refresh_response.status_code, 401)
+
+    def test_sensitive_profile_changes_require_current_password(self):
+        headers = self._headers(self.parent)
+
+        missing = self.client.patch(
+            "/api/parents/me",
+            headers=headers,
+            json={"password": "ChangedPass456!"},
+        )
+        self.assertEqual(missing.status_code, 400, missing.json)
+        self.assertTrue(self.parent.check_password("SecurePass123!"))
+
+        wrong = self.client.patch(
+            "/api/parents/me",
+            headers=headers,
+            json={
+                "current_password": "WrongPass123!",
+                "email": "changed@example.com",
+            },
+        )
+        self.assertEqual(wrong.status_code, 401, wrong.json)
+        self.assertEqual(self.parent.email, "parent@example.com")
+
+        changed = self.client.patch(
+            "/api/parents/me",
+            headers=headers,
+            json={
+                "current_password": "SecurePass123!",
+                "email": "changed@example.com",
+                "password": "ChangedPass456!",
+            },
+        )
+        self.assertEqual(changed.status_code, 200, changed.json)
+        self.assertEqual(self.parent.email, "changed@example.com")
+        self.assertTrue(self.parent.check_password("ChangedPass456!"))
+
+        name_only = self.client.patch(
+            "/api/parents/me",
+            headers=headers,
+            json={"name": "Updated Parent"},
+        )
+        self.assertEqual(name_only.status_code, 200, name_only.json)
+        self.assertEqual(self.parent.name, "Updated Parent")
+
+    def test_account_deletion_requires_current_password(self):
+        headers = self._headers(self.parent)
+
+        missing = self.client.delete("/api/parents/me", headers=headers)
+        self.assertEqual(missing.status_code, 400, missing.json)
+        self.assertIsNotNone(db.session.get(Parent, self.parent.id))
+
+        wrong = self.client.delete(
+            "/api/parents/me",
+            headers=headers,
+            json={"current_password": "WrongPass123!"},
+        )
+        self.assertEqual(wrong.status_code, 401, wrong.json)
+        self.assertIsNotNone(db.session.get(Parent, self.parent.id))
+
+        deleted = self.client.delete(
+            "/api/parents/me",
+            headers=headers,
+            json={"current_password": "SecurePass123!"},
+        )
+        self.assertEqual(deleted.status_code, 202, deleted.json)
+        self.assertIsNone(db.session.get(Parent, self.parent.id))
