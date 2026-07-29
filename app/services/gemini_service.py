@@ -94,3 +94,74 @@ def _normalise_question(raw, book_text):
         "hint": str(raw.get("hint") or "Look back at how this word was used in the story.").strip()[:180],
         "explanation": str(raw.get("explanation") or "This answer matches the way the word was used in the story.").strip()[:240],
     }
+
+
+def generate_story_word_quiz(book, config):
+    """Generate eight child-friendly, book-grounded multiple-choice questions."""
+    text = (book.text_content or "").strip()
+    if not text:
+        raise GeminiError("This book has no text available for quiz generation.")
+
+    model = str(config.get("GEMINI_MODEL", "gemini-2.5-flash")).strip()
+    prompt = f"""
+Create a fun story-word quiz for a child reading this book.
+
+Book title: {book.title}
+Age group: {book.age_group}
+Reading level: {book.reading_level}
+Book text:
+---
+{text[:30000]}
+---
+
+Return exactly 8 questions, or at least 6 questions if the story is too short for 8.
+Every question must test a word or phrase that appears exactly in the book text.
+Mix these question styles:
+1) meaning in the story,
+2) choosing the word that completes a story idea,
+3) remembering how a word was used in context.
+Do not ask generic questions such as “Which word was in the book?”
+Make each question short, warm, and understandable for the stated age group.
+Each question must have exactly four short options and exactly one correct answer.
+The answer must be one of the four options. Make distractors plausible but clearly wrong when the story is understood.
+Add a useful hint that does not reveal the answer and a one-sentence explanation for after the child answers.
+Do not invent events, characters, facts, or vocabulary that are not supported by the book.
+"""
+    try:
+        response = requests.post(
+            f"{API_BASE_URL}/{model}:generateContent",
+            headers={"Content-Type": "application/json", "x-goog-api-key": _api_key(config)},
+            json={
+                "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "responseMimeType": "application/json",
+                    "responseSchema": QUESTION_SCHEMA,
+                    "temperature": 0.55,
+                    "maxOutputTokens": 2600,
+                },
+            },
+            timeout=(10, max(1, int(config.get("GEMINI_REQUEST_TIMEOUT", 45)))),
+        )
+    except requests.RequestException as exc:
+        raise GeminiError("Gemini could not be reached while creating this quiz.") from exc
+    if not response.ok:
+        raise GeminiError(f"Gemini could not create this quiz: {_error_message(response)}")
+
+    try:
+        payload = response.json()
+        parts = payload["candidates"][0]["content"]["parts"]
+        generated_text = "".join(str(part.get("text") or "") for part in parts)
+        generated = json.loads(generated_text)
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        raise GeminiError("Gemini returned quiz content in an unexpected format.") from exc
+
+    questions = []
+    seen_words = set()
+    for raw in generated.get("questions", []) if isinstance(generated, dict) else []:
+        question = _normalise_question(raw, text)
+        if question and question["word"].casefold() not in seen_words:
+            questions.append(question)
+            seen_words.add(question["word"].casefold())
+    if len(questions) < 6:
+        raise GeminiError("Gemini did not return enough grounded quiz questions.")
+    return questions[:8]
