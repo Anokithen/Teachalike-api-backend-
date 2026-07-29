@@ -49,3 +49,68 @@ def _json_from_content(content):
         if start < 0 or end <= start:
             raise
         return json.loads(text[start : end + 1])
+
+
+def generate_book_draft(age_group, reading_level, idea, config):
+    """Generate a reviewed-ready children's story through NVIDIA NIM."""
+    idea = str(idea or "").strip()
+    if not idea:
+        raise NvidiaError("A story idea is required.")
+
+    prompt = f"""
+Write an original children's story for the TeachAlike reading app.
+
+Age group: {str(age_group or '').strip()}
+Reading level: {str(reading_level or '').strip()}
+Story idea: {idea[:500]}
+
+Return a short, engaging story with a clear beginning, middle, and ending.
+Use warm, age-appropriate language, vivid but safe imagery, and short paragraphs.
+Do not include a preface, lesson-plan notes, markdown headings, or questions.
+Return ONLY valid JSON with exactly these string fields:
+{{"title": "Story title", "text_content": "The complete story text"}}
+Do not wrap the JSON in markdown fences.
+"""
+
+    url = str(config.get("NVIDIA_API_URL", DEFAULT_API_URL)).strip() or DEFAULT_API_URL
+    model = str(config.get("NVIDIA_MODEL", DEFAULT_MODEL)).strip() or DEFAULT_MODEL
+    try:
+        response = requests.post(
+            url,
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {_api_key(config)}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": model,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "You create safe, original children's books and follow JSON output instructions exactly.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0.8,
+                "max_tokens": 2200,
+                "stream": False,
+            },
+            timeout=(10, max(1, int(config.get("NVIDIA_REQUEST_TIMEOUT", 60)))),
+        )
+    except requests.RequestException as exc:
+        raise NvidiaError("NVIDIA could not be reached while creating this book draft.") from exc
+    if not response.ok:
+        raise NvidiaError(f"NVIDIA could not create this book draft: {_error_message(response)}")
+
+    try:
+        payload = response.json()
+        content = payload["choices"][0]["message"]["content"]
+        generated = _json_from_content(content)
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        raise NvidiaError("NVIDIA returned book content in an unexpected format.") from exc
+
+    title = str(generated.get("title") or "").strip() if isinstance(generated, dict) else ""
+    text_content = str(generated.get("text_content") or "").strip() if isinstance(generated, dict) else ""
+    if not title or not text_content:
+        raise NvidiaError("NVIDIA returned an incomplete book draft.")
+    return {"title": title[:200], "text_content": text_content[:30000]}
