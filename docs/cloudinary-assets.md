@@ -10,7 +10,7 @@ configured.
 
 ## Configuration
 
-Set these server-only values locally or on the Railway API service:
+Set these server-only values in the API environment:
 
 ```env
 CLOUDINARY_CLOUD_NAME=your-cloud-name
@@ -34,8 +34,8 @@ large as the largest per-asset limit. All size values must be positive
 integers. Never expose these credentials through `NEXT_PUBLIC_*` variables or
 commit a real `.env`.
 
-On Railway, add the variables to the API service rather than the frontend
-service. Restart the API after changing them.
+Add the variables to the API process rather than the frontend. Restart the API
+after changing them.
 
 ## Dynamic folders and canonical paths
 

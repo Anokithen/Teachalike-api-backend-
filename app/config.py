@@ -35,18 +35,6 @@ def _positive_int_env(name, default):
     return value
 
 
-def _nonnegative_float_env(name, default):
-    """Read a non-negative numeric setting with a clear startup error."""
-    raw_value = _env_value(name, default=str(default))
-    try:
-        value = float(raw_value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{name} must be a non-negative number.") from exc
-    if value < 0:
-        raise ValueError(f"{name} must be a non-negative number.")
-    return value
-
-
 def _boolean_env(name, default):
     """Read a conventional true/false environment setting."""
     raw_value = _env_value(name, default="true" if default else "false").lower()
@@ -57,58 +45,13 @@ def _boolean_env(name, default):
     raise ValueError(f"{name} must be true or false.")
 
 
-def _is_railway_environment():
-    """Detect current and legacy Railway runtime environment markers."""
-    return any(
-        _env_value(name)
-        for name in (
-            "RAILWAY_ENVIRONMENT_ID",
-            "RAILWAY_ENVIRONMENT_NAME",
-            "RAILWAY_SERVICE_ID",
-            "RAILWAY_PROJECT_ID",
-            "RAILWAY_ENVIRONMENT",
-        )
-    )
-
-
-def _railway_database_url():
-    """Return the first complete Railway MySQL URL, ignoring malformed values."""
-    for name in ("MYSQL_URL", "DATABASE_URL", "MYSQL_PUBLIC_URL"):
-        railway_url = os.getenv(name, "").strip().strip("'\"")
-        if railway_url.startswith("mysql://"):
-            return railway_url.replace(
-                "mysql://",
-                "mysql+pymysql://",
-                1,
-            )
-        if railway_url.startswith("mysql+pymysql://"):
-            return railway_url
-    return ""
-
-
 def _build_database_uri():
-    # Railway's MySQL plugin exposes a ready-made connection string. Prefer
-    # the private URL, then DATABASE_URL, and use the public proxy only as a
-    # final URL fallback. A malformed value must not block the DB_* fallback.
-    railway_url = _railway_database_url()
-    if railway_url:
-        return railway_url
-
-    # Otherwise, build the URL from Railway's MYSQL* variables or the DB_*
-    # names used for local development.
-    db_user = os.getenv("MYSQLUSER") or os.getenv("DB_USER", "root")
-    db_password = (
-        os.getenv("MYSQLPASSWORD")
-        or os.getenv("MYSQL_ROOT_PASSWORD")
-        or os.getenv("DB_PASSWORD", "root123")
-    )
-    db_host = os.getenv("MYSQLHOST") or os.getenv("DB_HOST", "localhost")
-    db_port = os.getenv("MYSQLPORT") or os.getenv("DB_PORT", "3306")
-    db_name = (
-        os.getenv("MYSQLDATABASE")
-        or os.getenv("MYSQL_DATABASE")
-        or os.getenv("DB_NAME", "teachalike_db")
-    )
+    """Build the SQLAlchemy MySQL URI from the standard DB_* settings."""
+    db_user = os.getenv("DB_USER", "root")
+    db_password = os.getenv("DB_PASSWORD", "root123")
+    db_host = os.getenv("DB_HOST", "localhost")
+    db_port = os.getenv("DB_PORT", "3306")
+    db_name = os.getenv("DB_NAME", "teachalike_db")
 
     return (
         f"mysql+pymysql://{quote_plus(db_user)}:{quote_plus(db_password)}"
@@ -117,12 +60,6 @@ def _build_database_uri():
 
 
 class Config:
-    IS_RAILWAY = _is_railway_environment()
-    DATABASE_IS_CONFIGURED = bool(
-        _railway_database_url()
-        or os.getenv("MYSQLHOST")
-        or os.getenv("DB_HOST")
-    )
     DB_USER = os.getenv("DB_USER")
     DB_PASSWORD = os.getenv("DB_PASSWORD")
     DB_HOST = os.getenv("DB_HOST")
@@ -131,23 +68,15 @@ class Config:
 
     SQLALCHEMY_DATABASE_URI = _build_database_uri()
     SQLALCHEMY_TRACK_MODIFICATIONS = False
-    DATABASE_QUERY_TIMEOUT_SECONDS = _positive_int_env(
-        "DATABASE_QUERY_TIMEOUT_SECONDS",
-        30,
-    )
     SQLALCHEMY_ENGINE_OPTIONS = {
         "pool_pre_ping": True,
         "pool_recycle": 280,
-        "connect_args": {
-            "connect_timeout": 5,
-            "read_timeout": DATABASE_QUERY_TIMEOUT_SECONDS,
-            "write_timeout": DATABASE_QUERY_TIMEOUT_SECONDS,
-        },
+        "connect_args": {"connect_timeout": 5},
     }
 
-    _configured_jwt_secret = os.getenv("JWT_SECRET_KEY", "").strip()
-    JWT_SECRET_KEY_IS_EPHEMERAL = not bool(_configured_jwt_secret)
-    JWT_SECRET_KEY = _configured_jwt_secret or secrets.token_urlsafe(48)
+    JWT_SECRET_KEY = (
+        os.getenv("JWT_SECRET_KEY", "").strip() or secrets.token_urlsafe(48)
+    )
 
     # Flask-JWT-Extended reads JWT_ACCESS_TOKEN_EXPIRES specifically.
     JWT_ACCESS_TOKEN_EXPIRES = timedelta(
@@ -166,7 +95,7 @@ class Config:
     TRUST_PROXY_HOPS = int(
         _env_value(
             "TRUST_PROXY_HOPS",
-            default="1" if IS_RAILWAY else "0",
+            default="0",
         )
     )
     _trusted_hosts = _env_value("TRUSTED_HOSTS")
@@ -176,14 +105,6 @@ class Config:
         else None
     )
     AUTO_CREATE_TABLES = _boolean_env("AUTO_CREATE_TABLES", True)
-    DATABASE_STARTUP_MAX_ATTEMPTS = _positive_int_env(
-        "DATABASE_STARTUP_MAX_ATTEMPTS",
-        5 if IS_RAILWAY else 1,
-    )
-    DATABASE_STARTUP_RETRY_SECONDS = _nonnegative_float_env(
-        "DATABASE_STARTUP_RETRY_SECONDS",
-        2,
-    )
 
     CLOUDINARY_CLOUD_NAME = _env_value("CLOUDINARY_CLOUD_NAME")
     CLOUDINARY_API_KEY = _env_value("CLOUDINARY_API_KEY")

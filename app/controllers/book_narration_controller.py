@@ -225,8 +225,8 @@ def get_book_narration_status(narration_id):
     if not can_access_book_narration(narration):
         return jsonify({"error": "Book narration not found."}), 404
     if narration.status == STATUS_PROCESSING and not _narration_worker_is_live(narration.id):
-        # Status polling is also a recovery path after a gunicorn/Railway
-        # restart, when the in-memory executor and its future are lost.
+        # Status polling is also a recovery path after a process restart, when
+        # the in-memory executor and its future are lost.
         _enqueue_narration(narration.id)
     return jsonify(narration.to_dict()), 200
 

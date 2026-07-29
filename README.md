@@ -19,61 +19,6 @@ Reading-session microphone recordings are converted to mono 16 kHz WAV with ffmp
 
 4. Start the Flask API with `python run.py`.
 
-## Railway deployment
-
-The included `railway.toml`, `Dockerfile`, and `Procfile` are ready for a
-Railway web service. Deploy this directory as the service root. The container
-listens on Railway's `PORT` and installs `ffmpeg` for audio conversion.
-
-Set `JWT_SECRET_KEY`, `FRONTEND_ORIGINS`, and the Cloudinary variables in
-Railway. A Railway MySQL service can be connected by referencing its native
-`MYSQL_URL` (or its `MYSQL*` variables); the API also accepts the existing
-`DB_*` variables. `JWT_SECRET_KEY` must be stable and at least 32 characters.
-At startup, the API retries brief database availability races, creates missing
-tables, and applies the narrow compatibility updates represented by the model
-schema. The SQL files in `migrations/` remain available for review or manual
-database administration. If exit protection was deployed previously,
-`20260728_remove_exit_password.sql` removes its retired credential column.
-Database operations during startup are bounded by
-`DATABASE_QUERY_TIMEOUT_SECONDS` (30 seconds by default), keeping all retries
-inside Railway's deployment health-check window and identifying the failing
-schema stage in the deployment logs.
-
-For a Vercel frontend, set `FRONTEND_ORIGINS` on the Railway API service to the
-exact deployed frontend origin, for example
-`https://your-project.vercel.app`. Multiple origins can be comma-separated;
-custom domains and Vercel preview URLs may be listed separately. The API
-accepts a trailing slash, but the value should not include an `/api` path.
-Configure the frontend's API base URL to the public Railway API URL, including
-the `/api` prefix only if the frontend's requests are built from that base.
-The API process can be checked at `https://<railway-domain>/health`.
-Database readiness is checked at `https://<railway-domain>/health/ready`;
-Railway uses that endpoint as its deployment health check and will not promote
-a release that cannot connect to MySQL or is missing required tables.
-
-Important: MySQL service variables are not automatically visible to another
-Railway service. On the API service, add `MYSQL_URL` with a Railway service
-reference such as `${{MySQL.MYSQL_URL}}`, or add references for each `MYSQL*`
-variable. The reference must resolve to a value; literal `${{...}}` text means
-the variable was configured on the wrong service.
-
-The service uses Gunicorn's one-worker default because each worker can load a
-separate copy of the optional TTS model. Increase workers only by changing the
-start command when the Railway service has enough memory.
-
-To load the optional demo data after deployment:
-
-```bash
-python seed.py
-```
-
-Run this command from a Railway service shell after the MySQL service is
-available, or run it locally with the Railway database variables loaded.
-
-`seed.py` inserts sample data and is not required for the API to start. For a
-production database, review the SQL files in `migrations/` before applying
-schema changes.
-
 The browser records audio, uploads it to the authenticated `/api/reading-sessions/:id/pronunciation-transcript` endpoint, and then sends the returned transcript to the existing pronunciation scoring endpoint. Recordings are deleted from the server immediately after transcription.
 
 ## Gemini story word quizzes
@@ -171,7 +116,7 @@ responding.
 
 See [`docs/cloudinary-assets.md`](docs/cloudinary-assets.md) for folder
 mappings, supported formats, endpoints, cURL examples, replacement/deletion
-rules, account cleanup, Railway setup, migration details, and test commands.
+rules, account cleanup, deployment setup, migration details, and test commands.
 
 Set these server environment variables (the defaults are also in `.env.example`):
 

@@ -1,5 +1,3 @@
-import time
-
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from werkzeug.exceptions import RequestEntityTooLarge
@@ -15,7 +13,6 @@ from app.routes import register_blueprints
 def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
-    _validate_runtime_config(app)
     proxy_hops = app.config["TRUST_PROXY_HOPS"]
     if proxy_hops:
         app.wsgi_app = ProxyFix(
@@ -73,8 +70,17 @@ def create_app():
     from app.models import Parent, RevokedToken  # noqa: F401  (this import loads app/models/__init__.py,
     # which in turn imports every model class so they register with SQLAlchemy)
 
-    with app.app_context():
-        _prepare_database(app)
+    if app.config["AUTO_CREATE_TABLES"]:
+        with app.app_context():
+            try:
+                db.create_all()
+                _ensure_voice_profile_schema()
+                _ensure_profile_image_schema()
+                _ensure_book_schema()
+                _ensure_book_narration_schema()
+            except Exception as exc:  # pragma: no cover - startup diagnostics only
+                db.session.rollback()
+                app.logger.error("Could not initialize database tables: %s", exc)
 
     @jwt.user_lookup_loader
     def user_lookup_callback(_jwt_header, jwt_data):
@@ -106,16 +112,6 @@ def create_app():
     def health_check():
         return jsonify({"status": "ok"}), 200
 
-    @app.get("/health/ready")
-    def readiness_check():
-        try:
-            _verify_database_ready()
-        except Exception as exc:
-            db.session.rollback()
-            app.logger.warning("Database readiness check failed: %s", exc)
-            return jsonify({"status": "unavailable", "database": "unavailable"}), 503
-        return jsonify({"status": "ok", "database": "ready"}), 200
-
     @app.errorhandler(OperationalError)
     def handle_operational_error(err):
         db.session.rollback()
@@ -146,82 +142,6 @@ def create_app():
         return jsonify({"error": f"The uploaded file must be smaller than {limit_mb} MB."}), 413
 
     return app
-
-
-def _validate_runtime_config(app):
-    """Fail early when a Railway deployment is missing required secrets."""
-    if not app.config["IS_RAILWAY"]:
-        return
-    if not app.config["DATABASE_IS_CONFIGURED"]:
-        raise RuntimeError(
-            "Railway database configuration is missing. Reference MYSQL_URL "
-            "from the MySQL service on the API service."
-        )
-    if app.config["JWT_SECRET_KEY_IS_EPHEMERAL"]:
-        raise RuntimeError(
-            "JWT_SECRET_KEY must be set to a stable secret on Railway."
-        )
-    if len(app.config["JWT_SECRET_KEY"]) < 32:
-        raise RuntimeError("JWT_SECRET_KEY must contain at least 32 characters.")
-
-
-def _prepare_database(app):
-    """Connect, create/upgrade the schema, and retry brief Railway races."""
-    attempts = app.config["DATABASE_STARTUP_MAX_ATTEMPTS"]
-    retry_seconds = app.config["DATABASE_STARTUP_RETRY_SECONDS"]
-
-    for attempt in range(1, attempts + 1):
-        stage = "database connectivity and schema verification"
-        try:
-            if app.config["AUTO_CREATE_TABLES"]:
-                stage = "model table creation"
-                db.create_all()
-                stage = "voice profile schema compatibility"
-                _ensure_voice_profile_schema()
-                stage = "profile image schema compatibility"
-                _ensure_profile_image_schema()
-                stage = "book schema compatibility"
-                _ensure_book_schema()
-                stage = "book narration schema compatibility"
-                _ensure_book_narration_schema()
-            stage = "database connectivity and schema verification"
-            _verify_database_ready()
-            app.logger.info(
-                "Database initialization succeeded on attempt %s/%s.",
-                attempt,
-                attempts,
-            )
-            return
-        except Exception as exc:
-            db.session.rollback()
-            if attempt == attempts:
-                raise RuntimeError(
-                    "Database initialization failed during "
-                    f"{stage} after {attempts} attempt(s)."
-                ) from exc
-            app.logger.warning(
-                "Database initialization attempt %s/%s failed during %s; "
-                "retrying in %ss: %s",
-                attempt,
-                attempts,
-                stage,
-                retry_seconds,
-                exc,
-            )
-            time.sleep(retry_seconds)
-
-
-def _verify_database_ready():
-    """Verify both database connectivity and the complete model table set."""
-    db.session.execute(text("SELECT 1"))
-    existing_tables = set(inspect(db.engine).get_table_names())
-    expected_tables = set(db.metadata.tables)
-    missing_tables = sorted(expected_tables - existing_tables)
-    if missing_tables:
-        raise RuntimeError(
-            "Database schema is missing required tables: "
-            + ", ".join(missing_tables)
-        )
 
 
 def _ensure_voice_profile_schema():
