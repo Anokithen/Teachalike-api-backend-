@@ -36,3 +36,43 @@ def validate_account_email(value, *, required=True):
     if len(normalized) > MAX_EMAIL_LENGTH:
         return normalized, f"email must be {MAX_EMAIL_LENGTH} characters or fewer."
     return normalized, None
+
+
+def validate_password(value, *, required=True):
+    password = "" if value is None else str(value)
+    if required and not password:
+        return password, "password is required."
+    if not password:
+        return password, None
+    if len(password) < MIN_PASSWORD_LENGTH:
+        return password, f"password must be at least {MIN_PASSWORD_LENGTH} characters."
+    if len(password) > MAX_PASSWORD_LENGTH:
+        return password, f"password must be {MAX_PASSWORD_LENGTH} characters or fewer."
+    return password, None
+
+
+def is_safe_http_url(value):
+    """Accept HTTPS URLs, plus HTTP only for loopback development hosts."""
+    url = str(value or "").strip()
+    if not url:
+        return True
+    if len(url) > MAX_URL_LENGTH:
+        return False
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except (ValueError, UnicodeError):
+        return False
+    scheme = parsed.scheme.lower()
+    hostname = (parsed.hostname or "").lower()
+    safe_scheme = scheme == "https" or (
+        scheme == "http" and hostname in {"localhost", "127.0.0.1", "::1"}
+    )
+
+    return (
+        safe_scheme
+        and bool(hostname)
+        and parsed.username is None
+        and parsed.password is None
+        and (port is None or 1 <= port <= 65535)
+    )
