@@ -15,6 +15,7 @@ from app.routes import register_blueprints
 def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
+    _validate_deployment_config(app)
     proxy_hops = app.config["TRUST_PROXY_HOPS"]
     if proxy_hops:
         app.wsgi_app = ProxyFix(
@@ -106,6 +107,16 @@ def create_app():
     def health_check():
         return jsonify({"status": "ok"}), 200
 
+    @app.get("/health/ready")
+    def readiness_check():
+        try:
+            _verify_database_schema()
+        except Exception as exc:
+            db.session.rollback()
+            app.logger.warning("Database readiness check failed: %s", exc)
+            return jsonify({"status": "unavailable", "database": "unavailable"}), 503
+        return jsonify({"status": "ok", "database": "ready"}), 200
+
     @app.errorhandler(OperationalError)
     def handle_operational_error(err):
         db.session.rollback()
@@ -138,6 +149,33 @@ def create_app():
     return app
 
 
+def _validate_deployment_config(app):
+    """Reject incomplete production configuration before serving traffic."""
+    if not app.config["IS_RAILWAY"]:
+        return
+    if not app.config["DATABASE_IS_CONFIGURED"]:
+        raise RuntimeError(
+            "Database configuration is missing. Set MYSQL_URL to a MySQL "
+            "service reference on the API service."
+        )
+    if app.config["JWT_SECRET_KEY_IS_EPHEMERAL"]:
+        raise RuntimeError("JWT_SECRET_KEY must be set to a stable secret.")
+    jwt_secret = app.config["JWT_SECRET_KEY"]
+    if (
+        len(jwt_secret) < 32
+        or jwt_secret.lower().startswith("replace-with-")
+        or jwt_secret.lower().startswith("change-me")
+    ):
+        raise RuntimeError(
+            "JWT_SECRET_KEY must be a unique secret containing at least "
+            "32 characters, not an example placeholder."
+        )
+    if app.config["FRONTEND_ORIGINS"] == ["*"]:
+        raise RuntimeError(
+            "FRONTEND_ORIGINS must be set to the deployed frontend origin."
+        )
+
+
 def _initialize_database_schema(app):
     """Create all model tables, retrying transient database failures."""
     max_attempts = app.config["DB_INIT_MAX_ATTEMPTS"]
@@ -158,16 +196,10 @@ def _initialize_database_schema(app):
             stage = "book narration schema compatibility"
             _ensure_book_narration_schema()
             stage = "schema verification"
-            existing_tables = set(inspect(db.engine).get_table_names())
-            expected_tables = set(db.metadata.tables)
-            missing_tables = sorted(expected_tables - existing_tables)
-            if missing_tables:
-                raise RuntimeError(
-                    "Required tables were not created: " + ", ".join(missing_tables)
-                )
+            _verify_database_schema()
             app.logger.info(
                 "Database schema initialized successfully with %s tables.",
-                len(expected_tables),
+                len(db.metadata.tables),
             )
             return
         except Exception as exc:
@@ -187,6 +219,18 @@ def _initialize_database_schema(app):
                 exc,
             )
             time.sleep(retry_seconds)
+
+
+def _verify_database_schema():
+    """Verify database connectivity and every table registered by the models."""
+    db.session.execute(text("SELECT 1"))
+    existing_tables = set(inspect(db.engine).get_table_names())
+    expected_tables = set(db.metadata.tables)
+    missing_tables = sorted(expected_tables - existing_tables)
+    if missing_tables:
+        raise RuntimeError(
+            "Required tables are missing: " + ", ".join(missing_tables)
+        )
 
 
 def _ensure_voice_profile_schema():

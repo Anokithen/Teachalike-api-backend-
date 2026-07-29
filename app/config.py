@@ -57,13 +57,52 @@ def _boolean_env(name, default):
     raise ValueError(f"{name} must be true or false.")
 
 
+def _is_railway_environment():
+    """Detect current and legacy Railway runtime markers."""
+    return any(
+        _env_value(name)
+        for name in (
+            "RAILWAY_ENVIRONMENT_ID",
+            "RAILWAY_ENVIRONMENT_NAME",
+            "RAILWAY_SERVICE_ID",
+            "RAILWAY_PROJECT_ID",
+            "RAILWAY_ENVIRONMENT",
+        )
+    )
+
+
+def _railway_database_url():
+    """Return the first complete MySQL URL exposed to the API service."""
+    for name in ("MYSQL_URL", "DATABASE_URL", "MYSQL_PUBLIC_URL"):
+        database_url = _env_value(name)
+        if database_url.startswith("mysql://"):
+            return database_url.replace("mysql://", "mysql+pymysql://", 1)
+        if database_url.startswith("mysql+pymysql://"):
+            return database_url
+    return ""
+
+
 def _build_database_uri():
-    """Build the SQLAlchemy MySQL URI from the standard DB_* settings."""
-    db_user = os.getenv("DB_USER", "root")
-    db_password = os.getenv("DB_PASSWORD", "root123")
-    db_host = os.getenv("DB_HOST", "localhost")
-    db_port = os.getenv("DB_PORT", "3306")
-    db_name = os.getenv("DB_NAME", "teachalike_db")
+    """Build a MySQL URI from a full URL or individual connection values."""
+    database_url = _railway_database_url()
+    if database_url:
+        return database_url
+
+    db_user = _env_value("MYSQLUSER", "DB_USER", default="root")
+    db_password = _env_value(
+        "MYSQLPASSWORD",
+        "MYSQL_ROOT_PASSWORD",
+        "DB_PASSWORD",
+        default="root123",
+    )
+    db_host = _env_value("MYSQLHOST", "DB_HOST", default="localhost")
+    db_port = _env_value("MYSQLPORT", "DB_PORT", default="3306")
+    db_name = _env_value(
+        "MYSQLDATABASE",
+        "MYSQL_DATABASE",
+        "DB_NAME",
+        default="teachalike_db",
+    )
 
     return (
         f"mysql+pymysql://{quote_plus(db_user)}:{quote_plus(db_password)}"
@@ -72,6 +111,11 @@ def _build_database_uri():
 
 
 class Config:
+    IS_RAILWAY = _is_railway_environment()
+    DATABASE_IS_CONFIGURED = bool(
+        _railway_database_url()
+        or _env_value("MYSQLHOST", "DB_HOST")
+    )
     DB_USER = os.getenv("DB_USER")
     DB_PASSWORD = os.getenv("DB_PASSWORD")
     DB_HOST = os.getenv("DB_HOST")
@@ -94,9 +138,9 @@ class Config:
         },
     }
 
-    JWT_SECRET_KEY = (
-        os.getenv("JWT_SECRET_KEY", "").strip() or secrets.token_urlsafe(48)
-    )
+    _configured_jwt_secret = _env_value("JWT_SECRET_KEY")
+    JWT_SECRET_KEY_IS_EPHEMERAL = not bool(_configured_jwt_secret)
+    JWT_SECRET_KEY = _configured_jwt_secret or secrets.token_urlsafe(48)
 
     # Flask-JWT-Extended reads JWT_ACCESS_TOKEN_EXPIRES specifically.
     JWT_ACCESS_TOKEN_EXPIRES = timedelta(
@@ -115,7 +159,7 @@ class Config:
     TRUST_PROXY_HOPS = int(
         _env_value(
             "TRUST_PROXY_HOPS",
-            default="0",
+            default="1" if IS_RAILWAY else "0",
         )
     )
     _trusted_hosts = _env_value("TRUSTED_HOSTS")

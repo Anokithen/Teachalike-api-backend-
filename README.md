@@ -19,6 +19,46 @@ Reading-session microphone recordings are converted to mono 16 kHz WAV with ffmp
 
 4. Start the Flask API with `python run.py`.
 
+## Railway deployment
+
+Deploy this repository as the backend service and add a MySQL service in the
+same Railway project. The included `Dockerfile` installs the Python
+dependencies and ffmpeg, and `railway.toml` configures the database-aware
+`/health/ready` deployment check.
+
+Set these variables on the backend service:
+
+```env
+MYSQL_URL=${{MySQL.MYSQL_URL}}
+JWT_SECRET_KEY=replace-with-a-new-random-secret-of-at-least-32-characters
+FRONTEND_ORIGINS=https://your-project.vercel.app
+AUTO_CREATE_TABLES=true
+DB_INIT_MAX_ATTEMPTS=5
+DB_INIT_RETRY_SECONDS=2
+DB_QUERY_TIMEOUT_SECONDS=30
+```
+
+Use Railway's variable-reference autocomplete because `MySQL` must match the
+database service's exact name. Do not set `MYSQL_URL` to a bare hostname and
+port. The application converts the complete `mysql://` URL to the PyMySQL
+driver, creates and verifies all model tables before serving traffic, and
+fails deployment with the exact initialization stage if the database is not
+ready.
+
+Generate a unique JWT secret, for example with `openssl rand -hex 32`. Never
+put database credentials, provider secrets, or JWT secrets in the frontend.
+Railway supplies `PORT`; do not define it manually.
+
+After deployment:
+
+```text
+GET https://your-backend.up.railway.app/health
+GET https://your-backend.up.railway.app/health/ready
+```
+
+Both endpoints should return HTTP 200, and readiness should include
+`"database": "ready"`.
+
 The browser records audio, uploads it to the authenticated `/api/reading-sessions/:id/pronunciation-transcript` endpoint, and then sends the returned transcript to the existing pronunciation scoring endpoint. Recordings are deleted from the server immediately after transcription.
 
 ## Gemini story word quizzes
