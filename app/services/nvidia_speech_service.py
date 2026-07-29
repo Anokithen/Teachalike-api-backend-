@@ -47,3 +47,17 @@ def _error_message(response):
     except (ValueError, AttributeError):
         pass
     return f"NVIDIA returned HTTP {response.status_code}."
+
+
+def _ffmpeg_binary():
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg:
+        return ffmpeg
+    try:
+        import imageio_ffmpeg
+
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except (ImportError, RuntimeError) as err:
+        raise NvidiaSpeechError(
+            "ffmpeg is required to prepare pronunciation recordings."
+        ) from err
