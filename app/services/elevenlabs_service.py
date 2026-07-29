@@ -198,3 +198,52 @@ def _synthesize_chunk(voice_id, text, config, previous_text=None, next_text=None
     if not response.content:
         raise ElevenLabsError("ElevenLabs returned an empty audio file.")
     return response.content
+
+
+def _combine_mp3_files(paths, destination, config):
+    """Concatenate MP3 chunks with ffmpeg so browser playback stays reliable."""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as manifest:
+        manifest_path = manifest.name
+        for path in paths:
+            safe_path = str(Path(path).resolve()).replace("'", "'\\''")
+            manifest.write(f"file '{safe_path}'\n")
+    try:
+        subprocess.run(
+            [_ffmpeg_binary(config), "-y", "-f", "concat", "-safe", "0", "-i", manifest_path, "-c", "copy", str(destination)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=max(30, int(config.get("ELEVENLABS_REQUEST_TIMEOUT", 120))),
+        )
+    except (
+        FileNotFoundError,
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+    ) as exc:
+        raise ElevenLabsError("The generated narration chunks could not be combined.") from exc
+    finally:
+        if os.path.exists(manifest_path):
+            os.remove(manifest_path)
+
+
+def synthesize_narration(text, voice_id, output_path, config):
+    """Generate a complete MP3 narration from an ElevenLabs voice clone."""
+    max_chars = max(100, int(config.get("ELEVENLABS_MAX_CHARS_PER_CHUNK", 4500)))
+    chunks = split_text_into_chunks(text, max_chars)
+    if not chunks:
+        raise ElevenLabsError("This book has no text available for narration.")
+
+    with tempfile.TemporaryDirectory(prefix="teachalike-elevenlabs-") as temp_dir:
+        chunk_paths = []
+        for index, chunk in enumerate(chunks):
+            audio = _synthesize_chunk(
+                voice_id,
+                chunk,
+                config,
+                previous_text=chunks[index - 1][-500:] if index else None,
+                next_text=chunks[index + 1][:500] if index + 1 < len(chunks) else None,
+            )
+            chunk_path = Path(temp_dir) / f"chunk-{index}.mp3"
+            chunk_path.write_bytes(audio)
+            chunk_paths.append(chunk_path)
+        _combine_mp3_files(chunk_paths, output_path, config)
