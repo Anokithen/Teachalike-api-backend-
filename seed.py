@@ -136,3 +136,116 @@ def get_or_create_child(parent, teacher, name, age, gender, level, pin):
     child.set_pin(pin)
     db.session.add(child)
     return child, True
+
+
+def get_or_create_book(data):
+    book = Book.query.filter_by(title=data["title"]).first()
+    if book:
+        return book, False
+    book = Book(**data)
+    db.session.add(book)
+    return book, True
+
+
+def get_or_create_voice_profile(parent, label):
+    """Create a playable demo profile without uploading to Cloudinary."""
+    profile = VoiceProfile.query.filter_by(parent_id=parent.id, label=label).first()
+    if profile:
+        # Repair the old seed's example.com placeholder if this script is run
+        # against a database seeded by an earlier version.
+        if (profile.voice_sample_url or "").startswith("https://example.com/"):
+            profile.voice_sample_url = DEMO_VOICE_URL
+            profile.cloudinary_public_id = None
+            profile.status = STATUS_READY
+        return profile, False
+
+    profile = VoiceProfile(
+        parent_id=parent.id,
+        label=label,
+        voice_sample_url=DEMO_VOICE_URL,
+        # A null public ID makes the API use the stored fallback URL. A real
+        # uploaded profile will have a Cloudinary public ID instead.
+        cloudinary_public_id=None,
+        status=STATUS_READY,
+    )
+    db.session.add(profile)
+    return profile, True
+
+
+def get_or_create_session(child, book, voice_profile, *, completed, accuracy, minutes_ago):
+    session = (
+        ReadingSession.query.filter_by(child_id=child.id, book_id=book.id)
+        .order_by(ReadingSession.id.asc())
+        .first()
+    )
+    if session:
+        return session, False
+
+    started_at = utc_now() - timedelta(minutes=minutes_ago)
+    completed_at = started_at + timedelta(minutes=8) if completed else None
+    session = ReadingSession(
+        child_id=child.id,
+        book_id=book.id,
+        voice_profile_id=voice_profile.id if voice_profile else None,
+        started_at=started_at,
+        completed_at=completed_at,
+        accuracy_score=accuracy,
+        progress_log=[
+            {"type": "pronunciation_check", "sentence_index": 0, "accuracy": accuracy, "awarded_points": 10 if completed else 0},
+            {"type": "pronunciation_check", "sentence_index": 1, "accuracy": max(0, accuracy - 3), "awarded_points": 10 if completed else 0},
+        ],
+    )
+    db.session.add(session)
+    return session, True
+
+
+def ensure_feedback(session, feedback_type, text):
+    if Feedback.query.filter_by(session_id=session.id, feedback_type=feedback_type).first():
+        return False
+    db.session.add(Feedback(
+        session_id=session.id,
+        feedback_type=feedback_type,
+        feedback_text=text,
+    ))
+    return True
+
+
+def ensure_game_result(child, game, score):
+    if GameResult.query.filter_by(child_id=child.id, game_id=game.id).first():
+        return False
+    db.session.add(GameResult(child_id=child.id, game_id=game.id, score=score))
+    return True
+
+
+def ensure_leaderboard_entry(child, points, streak_count):
+    entry = LeaderboardEntry.query.filter_by(
+        child_id=child.id,
+        week_start=_current_week_start(),
+    ).first()
+    if entry:
+        return False
+    db.session.add(LeaderboardEntry(
+        child_id=child.id,
+        week_start=_current_week_start(),
+        points=points,
+        streak_count=streak_count,
+    ))
+    return True
+
+
+def ensure_optional_narration(book, voice_profile):
+    """Seed a ready narration only when the caller provides a real asset."""
+    audio_url = os.getenv("SEED_NARRATION_AUDIO_URL", "").strip()
+    public_id = os.getenv("SEED_NARRATION_CLOUDINARY_PUBLIC_ID", "").strip()
+    if not audio_url or not public_id:
+        return False
+    if BookNarration.query.filter_by(book_id=book.id, voice_profile_id=voice_profile.id).first():
+        return False
+    db.session.add(BookNarration(
+        book_id=book.id,
+        voice_profile_id=voice_profile.id,
+        status=NARRATION_READY,
+        narration_audio_url=audio_url,
+        cloudinary_public_id=public_id,
+    ))
+    return True
