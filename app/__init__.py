@@ -174,10 +174,10 @@ def _validate_deployment_config(app):
             f"{', '.join(missing_variables)}."
         )
     if app.config["DATABASE_USES_RAILWAY_PUBLIC_PROXY"]:
-        raise RuntimeError(
-            "DB_HOST points to Railway's public TCP proxy. Set DB_HOST to "
-            "the MySQL service's MYSQLHOST reference so the backend uses "
-            "Railway private networking."
+        app.logger.warning(
+            "DB_HOST uses Railway's public TCP proxy. The connection is "
+            "supported, but the MySQL service's MYSQLHOST reference is "
+            "usually faster for services in the same Railway project."
         )
     if app.config["JWT_SECRET_KEY_IS_EPHEMERAL"]:
         raise RuntimeError("JWT_SECRET_KEY must be set to a stable secret.")

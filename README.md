@@ -47,9 +47,10 @@ serving traffic and fails deployment with the exact initialization stage if
 the database is not ready.
 
 Keep the API and MySQL services in the same Railway project and set `DB_HOST`
-through `${{MySQL.MYSQLHOST}}`. Do not paste a `*.proxy.rlwy.net` public TCP
-proxy into `DB_HOST`; the production validator rejects that slower external
-route and directs the deployment to Railway's private network instead.
+through `${{MySQL.MYSQLHOST}}` when private networking is available. A
+`*.proxy.rlwy.net` public TCP proxy is also supported, so existing Railway
+deployments can continue using their current `DB_HOST`; the backend logs a
+performance warning instead of blocking startup.
 
 `railway.toml` runs `python -m app.database_setup` once before rollout. The
 web worker deliberately skips automatic table creation on Railway, even if an

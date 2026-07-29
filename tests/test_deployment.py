@@ -170,12 +170,14 @@ class DeploymentValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "DB_HOST"):
             _validate_deployment_config(app)
 
-    def test_public_railway_database_proxy_is_rejected(self):
+    def test_public_railway_database_proxy_is_allowed_with_warning(self):
         app = self._app_with_valid_config()
         app.config["DATABASE_USES_RAILWAY_PUBLIC_PROXY"] = True
 
-        with self.assertRaisesRegex(RuntimeError, "private networking"):
+        with self.assertLogs(app.logger.name, level="WARNING") as logs:
             _validate_deployment_config(app)
+
+        self.assertIn("public TCP proxy", "\n".join(logs.output))
 
 
 class DatabaseStartupModeTests(unittest.TestCase):
