@@ -67,6 +67,43 @@ Admins use `GET /api/admin/book-analytics`, with optional `search`, `sort`
 (`views`, `reads`, or `likes`), `page`, and `per_page`. It returns aggregate
 counts only and never exposes individual child activity.
 
+## Teacher-authored books
+
+An authenticated teacher whose profile is currently `approved` can publish and
+manage books. Pending, rejected, banned, parent, and child identities cannot use
+the management operations. Ownership is always taken from the JWT; request
+fields such as `created_by_account_id`, Cloudinary folders, and public IDs are
+ignored and cannot change attribution.
+
+- `POST /api/books` accepts JSON or `multipart/form-data` and an optional
+  8–64 character `Idempotency-Key`. Multipart files are `cover_image`, up to
+  eight `illustrations`, and optional `video`.
+- `GET /api/teacher/books` lists only the current teacher's books with aggregate
+  views, reads, and likes.
+- `GET /api/teacher/books/<book_id>` returns one owned editing record.
+- `PATCH /api/teacher/books/<book_id>` updates one owned book and can replace
+  managed media.
+- `DELETE /api/teacher/books/<book_id>` deletes one owned book when it has no
+  reading sessions.
+
+Admins retain the existing unrestricted `/api/admin/books` operations. Every
+safe book response uses the shared `created_by` and `created_by_label`
+serializer. Teacher books display `Created by <teacher name>` without email,
+phone, address, school, tuition, or approval data. Legacy/admin-created books
+display `Created by TeachAlike`. The name snapshot remains after an account is
+deleted, while the nullable owner foreign key uses `ON DELETE SET NULL`; the
+book and its delivery media are not deleted with the teacher.
+
+Teacher media uses server-generated folders beneath
+`teachalike/<teacher_id>/Image/Books/<book_id>_<title>` and the corresponding
+server-generated video folder. Extension, MIME, signature, and configured size
+limits are checked before upload. Cover, illustration, and video metadata is
+recorded in the existing `assets` ledger; MySQL never receives raw bytes. New
+uploads are removed from Cloudinary if their database transaction fails, and
+replaced/deleted managed assets follow the existing confirmed cleanup path.
+Teacher-created books use the same mini-games, narration, reading sessions,
+daily views, child likes, and admin analytics as every other book.
+
 ## Teacher and engagement database migration
 
 The new SQLAlchemy models are registered before `db.create_all()`. Railway's
@@ -85,6 +122,23 @@ mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p "$DB_NAME" \
 The migration creates `teacher_profiles`, `book_views`, and `book_likes` with
 foreign keys, cascade behavior, indexes, and uniqueness constraints, then
 backfills legacy teachers. It does not reset or delete existing data. No new
+environment variables are required.
+
+After that migration, apply the idempotent ownership migration:
+
+```bash
+mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p "$DB_NAME" \
+  < migrations/20260802_teacher_book_ownership.sql
+```
+
+It adds nullable creator ownership/snapshot fields, description and update
+timestamps, an ownership index, an idempotency uniqueness constraint, and the
+`ON DELETE SET NULL` foreign key without changing existing books. It also
+changes the asset-ledger owner FK to nullable `SET NULL` so surviving book
+media remains traceable after teacher deletion; ordinary account assets are
+still deleted by the transactional account-cleanup workflow. Railway's
+pre-deploy compatibility initializer performs the equivalent schema checks, so
+`/health/ready` and `db.create_all()` deployments continue to work. No new
 environment variables are required.
 
 Run the complete backend suite without external Cloudinary calls using:
