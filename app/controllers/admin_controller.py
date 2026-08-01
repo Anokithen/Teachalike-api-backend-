@@ -10,10 +10,10 @@ from app.models.reading_session_model import ReadingSession
 from app.models.book_view_model import BookView
 from app.models.book_like_model import BookLike
 from app.models.asset_model import Asset, USER_PROFILE_IMAGE
-from app.models.teacher_profile_model import (
+from app.models.teacher_application_model import (
     APPROVAL_APPROVED,
     APPROVAL_REJECTED,
-    TeacherProfile,
+    TeacherApplication,
     VALID_TEACHER_TYPES,
     VALID_APPROVAL_STATUSES,
 )
@@ -172,7 +172,7 @@ def register_teacher():
         db.session.add(account)
         db.session.flush()
         db.session.add(
-            TeacherProfile(
+            TeacherApplication(
                 account_id=account.id,
                 phone_number=phone_number,
                 address=address,
@@ -396,7 +396,7 @@ def list_parents():
 
 def _teacher_admin_dict(account):
     data = account.to_dict()
-    profile = account.teacher_profile
+    profile = account.teacher_application
     if profile:
         data.update(profile.to_private_dict())
     else:
@@ -421,8 +421,8 @@ def list_teachers():
         return jsonify({"error": "status must be pending, approved, or rejected."}), 400
     query = Parent.query.filter_by(role=ROLE_TEACHER)
     if status:
-        query = query.join(TeacherProfile).filter(
-            TeacherProfile.approval_status == status
+        query = query.join(TeacherApplication).filter(
+            TeacherApplication.approval_status == status
         )
     accounts = query.order_by(Parent.id.desc()).all()
     return jsonify({"teachers": [_teacher_admin_dict(item) for item in accounts]}), 200
@@ -439,10 +439,10 @@ def _review_teacher(teacher_id, approval_status):
     account = db.session.get(Parent, teacher_id)
     if not account or account.role != ROLE_TEACHER:
         return jsonify({"error": "Teacher not found."}), 404
-    profile = account.teacher_profile
+    profile = account.teacher_application
     created_profile = profile is None
     if profile is None:
-        profile = TeacherProfile(
+        profile = TeacherApplication(
             account_id=account.id,
             approval_status=APPROVAL_APPROVED,
         )
