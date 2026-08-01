@@ -325,6 +325,7 @@ def _ensure_book_schema():
         "created_by_account_id": "INTEGER NULL",
         "creator_name_snapshot": "VARCHAR(120) NULL",
         "creation_request_id": "VARCHAR(64) NULL",
+        "asset_root_folder": "VARCHAR(500) NULL",
         "updated_at": "DATETIME NULL",
     }
     changed = False
@@ -374,6 +375,14 @@ def _ensure_book_schema():
             ))
             changed = True
     if changed:
+        db.session.commit()
+    from app.models.book_model import Book
+    from app.services.book_management_service import ensure_book_asset_root
+    roots_changed = False
+    for book in Book.query.filter(Book.asset_root_folder.is_(None)).all():
+        ensure_book_asset_root(book)
+        roots_changed = True
+    if roots_changed:
         db.session.commit()
 
 

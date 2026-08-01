@@ -34,6 +34,7 @@ class Book(db.Model):
     )
     creator_name_snapshot = db.Column(db.String(120), nullable=True)
     creation_request_id = db.Column(db.String(64), nullable=True)
+    asset_root_folder = db.Column(db.String(500), nullable=True)
     created_at = db.Column(db.DateTime, nullable=False, default=utc_now)
     updated_at = db.Column(
         db.DateTime, nullable=False, default=utc_now, onupdate=utc_now
