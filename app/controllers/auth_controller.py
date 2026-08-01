@@ -14,11 +14,11 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from app.models.asset_model import Asset, USER_PROFILE_IMAGE
 from app.models.parent_model import Parent, ROLE_PARENT, ROLE_TEACHER
 from app.models.revoked_token_model import RevokedToken
-from app.models.teacher_profile_model import (
+from app.models.teacher_application_model import (
     APPROVAL_APPROVED,
     APPROVAL_PENDING,
     APPROVAL_REJECTED,
-    TeacherProfile,
+    TeacherApplication,
     VALID_TEACHER_TYPES,
 )
 from app.security import (
@@ -47,9 +47,9 @@ MAX_ADDRESS_LENGTH = 500
 MAX_ORGANIZATION_LENGTH = 200
 def _teacher_access_error(account):
     """Return the stable approval error for a blocked teacher, if any."""
-    if not account or not account.is_teacher or not account.teacher_profile:
+    if not account or not account.is_teacher or not account.teacher_application:
         return None
-    profile = account.teacher_profile
+    profile = account.teacher_application
     if profile.approval_status == APPROVAL_REJECTED:
         payload = {
             "error": "Your teacher registration was rejected by an administrator.",
@@ -209,7 +209,7 @@ def register():
 
         if account_type == ROLE_TEACHER:
             db.session.flush()
-            profile = TeacherProfile(
+            profile = TeacherApplication(
                 account_id=account.id,
                 phone_number=data["phone_number"],
                 address=data["address"],
