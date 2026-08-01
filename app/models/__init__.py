@@ -10,6 +10,7 @@ from app.models.leaderboard_model import LeaderboardEntry
 from app.models.book_narration_model import BookNarration
 from app.models.revoked_token_model import RevokedToken
 from app.models.asset_model import Asset
+from app.models.teacher_application_model import TeacherApplication
 from app.models.teacher_profile_model import TeacherProfile
 from app.models.book_view_model import BookView
 from app.models.book_like_model import BookLike
@@ -27,6 +28,7 @@ __all__ = [
     "BookNarration",
     "RevokedToken",
     "Asset",
+    "TeacherApplication",
     "TeacherProfile",
     "BookView",
     "BookLike",
