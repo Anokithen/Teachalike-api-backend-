@@ -1,20 +1,22 @@
 """Approved-teacher book management with server-owned attribution and media."""
 
 import re
-from uuid import uuid4
 
 from flask import current_app, jsonify, request
 from flask_jwt_extended import current_user
-from sqlalchemy import func
+from sqlalchemy import and_, func, or_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.extensions import db
 from app.models.asset_model import (
     Asset,
     BOOK_COVER_IMAGE,
+    BOOK_IMAGE,
     BOOK_ILLUSTRATION,
     BOOK_VIDEO,
     STATUS_COMPLETED,
+    STATUS_DELETED,
+    TEACHER_BOOK_AUDIO,
 )
 from app.models.book_like_model import BookLike
 from app.models.book_model import Book
@@ -24,17 +26,21 @@ from app.security import book_creation_attempts
 from app.services.book_games import create_default_mini_games
 from app.services.book_management_service import (
     asset_reference,
-    book_asset_references,
     cleanup_references,
+    BookAssetCleanupError,
+    delete_book_with_registered_assets,
+    ensure_book_asset_root,
     request_book_data,
     validate_book_payload,
     validate_media_files,
 )
 from app.services.cloudinary_path_service import (
-    get_book_image_folder,
-    get_book_video_folder,
+    get_book_images_folder_from_root,
+    get_book_video_folder_from_root,
+    get_teacher_book_audio_folder_from_root,
 )
 from app.services.cloudinary_service import CloudinaryServiceError, upload_asset
+from app.utils import utc_now
 
 IDEMPOTENCY_PATTERN = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 
@@ -48,13 +54,24 @@ def _owned_book(book_id):
     return book, None
 
 
-def _upload(upload, *, folder, category, book, kind, index=None):
-    suffix = f"{kind}_{index}_{uuid4().hex}" if index is not None else f"{kind}_{uuid4().hex}"
+def _upload(
+    upload,
+    *,
+    folder,
+    category,
+    book,
+    public_name,
+    slot,
+    overwrite=False,
+):
+    is_audio = category == TEACHER_BOOK_AUDIO
     metadata = upload_asset(
         upload,
         folder,
-        resource_type="video" if category == BOOK_VIDEO else "image",
-        public_id=f"{folder}/{suffix}",
+        resource_type="video" if category in {BOOK_VIDEO, TEACHER_BOOK_AUDIO} else "image",
+        public_id=f"{folder}/{public_name}",
+        overwrite=overwrite,
+        delivery_type="authenticated" if is_audio else "upload",
         tags=[category.lower(), f"book_{book.id}", f"teacher_{current_user.id}"],
         context={"book_id": str(book.id), "owner_account_id": str(current_user.id)},
     )
@@ -64,7 +81,7 @@ def _upload(upload, *, folder, category, book, kind, index=None):
             category=category,
             owner_user_id=current_user.id,
             book_id=book.id,
-            active_slot=f"book:{book.id}:{kind}" if index is None else None,
+            active_slot=f"book:{book.id}:{slot}",
             status=STATUS_COMPLETED,
         )
     )
@@ -101,7 +118,7 @@ def create_book():
     if errors:
         return jsonify({"errors": errors}), 400
     try:
-        cover, illustrations, video = validate_media_files(request)
+        cover, illustrations, video, teacher_audio = validate_media_files(request)
     except ValueError as exc:
         return jsonify({"errors": [str(exc)]}), _status_for_validation(str(exc))
 
@@ -115,13 +132,14 @@ def create_book():
         )
         db.session.add(book)
         db.session.flush()
+        asset_root = ensure_book_asset_root(book)
         create_default_mini_games(book)
 
-        image_folder = get_book_image_folder(current_user.id, book.id, book.title)
+        image_folder = get_book_images_folder_from_root(asset_root)
         if cover:
             metadata = _upload(
-                cover, folder=image_folder, category=BOOK_COVER_IMAGE,
-                book=book, kind="cover"
+                cover, folder=image_folder, category=BOOK_IMAGE,
+                book=book, public_name="cover", slot="cover"
             )
             uploaded.append(metadata)
             book.cover_image_url = metadata["secure_url"]
@@ -129,19 +147,28 @@ def create_book():
             urls = []
             for index, illustration in enumerate(illustrations, start=1):
                 metadata = _upload(
-                    illustration, folder=image_folder, category=BOOK_ILLUSTRATION,
-                    book=book, kind="illustration", index=index
+                    illustration, folder=image_folder, category=BOOK_IMAGE,
+                    book=book, public_name=f"picture_{index:02d}",
+                    slot=f"picture:{index:02d}"
                 )
                 uploaded.append(metadata)
                 urls.append(metadata["secure_url"])
             book.image_urls = urls
         if video:
-            folder = get_book_video_folder(current_user.id, current_user.id, book.id, book.title)
+            folder = get_book_video_folder_from_root(asset_root)
             metadata = _upload(
-                video, folder=folder, category=BOOK_VIDEO, book=book, kind="video"
+                video, folder=folder, category=BOOK_VIDEO, book=book,
+                public_name="video_01", slot="video:01"
             )
             uploaded.append(metadata)
             book.video_url = metadata["secure_url"]
+        if teacher_audio:
+            folder = get_teacher_book_audio_folder_from_root(asset_root)
+            metadata = _upload(
+                teacher_audio, folder=folder, category=TEACHER_BOOK_AUDIO,
+                book=book, public_name="voice_audio_teacher", slot="teacher_audio"
+            )
+            uploaded.append(metadata)
         db.session.commit()
         return jsonify({
             "message": "Book created successfully.",
@@ -224,7 +251,7 @@ def update_book(book_id):
     if errors:
         return jsonify({"errors": errors}), 400
     try:
-        cover, illustrations, video = validate_media_files(request)
+        cover, illustrations, video, teacher_audio = validate_media_files(request)
     except ValueError as exc:
         return jsonify({"errors": [str(exc)]}), _status_for_validation(str(exc))
 
@@ -233,42 +260,102 @@ def update_book(book_id):
     try:
         for field, value in values.items():
             setattr(book, field, value)
-        image_folder = get_book_image_folder(current_user.id, book.id, book.title)
+        asset_root = ensure_book_asset_root(book)
+        image_folder = get_book_images_folder_from_root(asset_root)
         if cover:
-            old = Asset.query.filter_by(
-                book_id=book.id, asset_category=BOOK_COVER_IMAGE
+            old = Asset.query.filter(
+                Asset.book_id == book.id,
+                Asset.asset_category.in_((BOOK_COVER_IMAGE, BOOK_IMAGE)),
+                Asset.active_slot == f"book:{book.id}:cover",
+                Asset.deleted_at.is_(None),
             ).all()
-            old_refs.extend(asset_reference(item) for item in old)
+            old_ids = {item.cloudinary_public_id for item in old}
             for item in old:
-                db.session.delete(item)
-            metadata = _upload(cover, folder=image_folder, category=BOOK_COVER_IMAGE, book=book, kind="cover")
-            uploaded.append(metadata)
+                item.active_slot = None
+                item.status = STATUS_DELETED
+                item.deleted_at = utc_now()
+            metadata = _upload(
+                cover, folder=image_folder, category=BOOK_IMAGE, book=book,
+                public_name="cover", slot="cover", overwrite=True
+            )
+            old_refs.extend(
+                asset_reference(item) for item in old
+                if item.cloudinary_public_id != metadata["public_id"]
+            )
+            if metadata["public_id"] not in old_ids:
+                uploaded.append(metadata)
             book.cover_image_url = metadata["secure_url"]
         if illustrations:
-            old = Asset.query.filter_by(
-                book_id=book.id, asset_category=BOOK_ILLUSTRATION
+            old = Asset.query.filter(
+                Asset.book_id == book.id,
+                or_(
+                    Asset.asset_category == BOOK_ILLUSTRATION,
+                    and_(
+                        Asset.asset_category == BOOK_IMAGE,
+                        Asset.active_slot.like(f"book:{book.id}:picture:%"),
+                    ),
+                ),
+                Asset.deleted_at.is_(None),
             ).all()
-            old_refs.extend(asset_reference(item) for item in old)
+            old_ids = {item.cloudinary_public_id for item in old}
             for item in old:
-                db.session.delete(item)
+                item.active_slot = None
+                item.status = STATUS_DELETED
+                item.deleted_at = utc_now()
             urls = []
+            new_ids = set()
             for index, illustration in enumerate(illustrations, start=1):
                 metadata = _upload(
-                    illustration, folder=image_folder, category=BOOK_ILLUSTRATION,
-                    book=book, kind="illustration", index=index
+                    illustration, folder=image_folder, category=BOOK_IMAGE,
+                    book=book, public_name=f"picture_{index:02d}",
+                    slot=f"picture:{index:02d}", overwrite=True
                 )
-                uploaded.append(metadata)
+                new_ids.add(metadata["public_id"])
+                if metadata["public_id"] not in old_ids:
+                    uploaded.append(metadata)
                 urls.append(metadata["secure_url"])
+            old_refs.extend(
+                asset_reference(item) for item in old
+                if item.cloudinary_public_id not in new_ids
+            )
             book.image_urls = urls
         if video:
-            old = Asset.query.filter_by(book_id=book.id, asset_category=BOOK_VIDEO).all()
-            old_refs.extend(asset_reference(item) for item in old)
+            old = Asset.query.filter_by(
+                book_id=book.id, asset_category=BOOK_VIDEO, deleted_at=None,
+            ).all()
+            old_ids = {item.cloudinary_public_id for item in old}
             for item in old:
-                db.session.delete(item)
-            folder = get_book_video_folder(current_user.id, current_user.id, book.id, book.title)
-            metadata = _upload(video, folder=folder, category=BOOK_VIDEO, book=book, kind="video")
-            uploaded.append(metadata)
+                item.active_slot = None
+                item.status = STATUS_DELETED
+                item.deleted_at = utc_now()
+            folder = get_book_video_folder_from_root(asset_root)
+            metadata = _upload(
+                video, folder=folder, category=BOOK_VIDEO, book=book,
+                public_name="video_01", slot="video:01", overwrite=True
+            )
+            old_refs.extend(asset_reference(item) for item in old if item.cloudinary_public_id != metadata["public_id"])
+            if metadata["public_id"] not in old_ids:
+                uploaded.append(metadata)
             book.video_url = metadata["secure_url"]
+        if teacher_audio:
+            old = Asset.query.filter_by(
+                book_id=book.id, asset_category=TEACHER_BOOK_AUDIO,
+                active_slot=f"book:{book.id}:teacher_audio", deleted_at=None,
+            ).all()
+            old_ids = {item.cloudinary_public_id for item in old}
+            for item in old:
+                item.active_slot = None
+                item.status = STATUS_DELETED
+                item.deleted_at = utc_now()
+            folder = get_teacher_book_audio_folder_from_root(asset_root)
+            metadata = _upload(
+                teacher_audio, folder=folder, category=TEACHER_BOOK_AUDIO,
+                book=book, public_name="voice_audio_teacher",
+                slot="teacher_audio", overwrite=True
+            )
+            old_refs.extend(asset_reference(item) for item in old if item.cloudinary_public_id != metadata["public_id"])
+            if metadata["public_id"] not in old_ids:
+                uploaded.append(metadata)
         db.session.commit()
         cleanup_references(old_refs)
         return jsonify({"message": "Book updated successfully.", "book": book.to_dict(True)}), 200
@@ -288,13 +375,11 @@ def delete_book(book_id):
         return error
     if ReadingSession.query.filter_by(book_id=book.id).first():
         return jsonify({"error": "This book cannot be deleted because it has reading sessions."}), 409
-    references = book_asset_references(book.id)
     try:
-        Asset.query.filter_by(book_id=book.id).delete(synchronize_session=False)
-        db.session.delete(book)
-        db.session.commit()
-        cleanup_references(references)
+        delete_book_with_registered_assets(book)
         return jsonify({"message": "Book deleted successfully."}), 200
+    except BookAssetCleanupError:
+        return jsonify({"error": "Book asset cleanup is incomplete. Please retry."}), 503
     except Exception:
         db.session.rollback()
         return jsonify({"error": "The book could not be deleted."}), 500
