@@ -38,6 +38,9 @@ class Child(db.Model):
     leaderboard_entries = db.relationship(
         "LeaderboardEntry", backref="child", cascade="all, delete-orphan", lazy=True
     )
+    book_likes = db.relationship(
+        "BookLike", backref="child", cascade="all, delete-orphan", lazy=True
+    )
 
     def to_dict(self):
         return {

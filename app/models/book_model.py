@@ -23,6 +23,12 @@ class Book(db.Model):
     narrations = db.relationship(
         "BookNarration", backref="book", cascade="all, delete-orphan", lazy=True
     )
+    views = db.relationship(
+        "BookView", backref="book", cascade="all, delete-orphan", lazy=True
+    )
+    likes = db.relationship(
+        "BookLike", backref="book", cascade="all, delete-orphan", lazy=True
+    )
 
     def to_dict(self, include_content=False):
         data = {

@@ -34,6 +34,18 @@ class Parent(db.Model):
     voice_profiles = db.relationship(
         "VoiceProfile", backref="parent", cascade="all, delete-orphan", lazy=True
     )
+    teacher_profile = db.relationship(
+        "TeacherProfile",
+        foreign_keys="TeacherProfile.account_id",
+        back_populates="account",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+    reviewed_teacher_profiles = db.relationship(
+        "TeacherProfile",
+        foreign_keys="TeacherProfile.reviewed_by_id",
+        back_populates="reviewed_by",
+    )
 
     def set_password(self, password):
         self.password = generate_password_hash(password)
@@ -63,3 +75,10 @@ class Parent(db.Model):
             "profile_image_url": self.profile_image_url,
             "created_at": utc_isoformat(self.created_at),
         }
+
+    def to_self_dict(self):
+        """Include private teacher fields only for the account itself."""
+        data = self.to_dict()
+        if self.is_teacher and self.teacher_profile:
+            data["teacher_profile"] = self.teacher_profile.to_private_dict()
+        return data
