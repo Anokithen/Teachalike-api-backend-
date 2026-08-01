@@ -6,9 +6,11 @@ import unittest
 from unittest.mock import patch
 
 from flask import Flask
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 
 from app import (
+    _ensure_teacher_application_schema,
+    _prepare_teacher_application_table,
     _should_initialize_database,
     _validate_deployment_config,
     create_app,
@@ -293,6 +295,43 @@ class ReadinessTests(unittest.TestCase):
         response = self.client.get("/health/ready")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json["database"], "ready")
+
+    def test_teacher_applications_have_a_dedicated_table(self):
+        inspector = inspect(db.engine)
+        self.assertTrue(inspector.has_table("teacher_applications"))
+        self.assertFalse(inspector.has_table("teacher_profiles"))
+
+    def test_legacy_teacher_profiles_table_is_renamed_without_data_loss(self):
+        db.session.execute(text(
+            "INSERT INTO parents (name, email, password, role, is_banned) "
+            "VALUES ('Legacy Teacher', 'legacy-table@example.com', 'hash', "
+            "'teacher', 0)"
+        ))
+        account_id = db.session.execute(text(
+            "SELECT id FROM parents WHERE email = 'legacy-table@example.com'"
+        )).scalar_one()
+        db.session.execute(text(
+            "INSERT INTO teacher_applications "
+            "(account_id, phone_number, approval_status, created_at, updated_at) "
+            "VALUES (:account_id, '+94 77 000 0000', 'pending', "
+            "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+        ), {"account_id": account_id})
+        db.session.execute(text(
+            "ALTER TABLE teacher_applications RENAME TO teacher_profiles"
+        ))
+        db.session.commit()
+
+        _prepare_teacher_application_table()
+        _ensure_teacher_application_schema()
+
+        inspector = inspect(db.engine)
+        self.assertTrue(inspector.has_table("teacher_applications"))
+        self.assertFalse(inspector.has_table("teacher_profiles"))
+        stored_phone = db.session.execute(text(
+            "SELECT phone_number FROM teacher_applications "
+            "WHERE account_id = :account_id"
+        ), {"account_id": account_id}).scalar_one()
+        self.assertEqual(stored_phone, "+94 77 000 0000")
 
     def test_readiness_rejects_an_incomplete_schema(self):
         db.session.execute(text("DROP TABLE revoked_tokens"))
