@@ -4,6 +4,7 @@ from flask import jsonify
 from flask_jwt_extended import verify_jwt_in_request, current_user
 
 from app.models.parent_model import ROLE_ADMIN, ROLE_TEACHER, ROLE_PARENT
+from app.models.teacher_profile_model import APPROVAL_APPROVED
 
 
 def parent_required(fn):
@@ -48,6 +49,29 @@ def admin_required(fn):
 
 def teacher_required(fn):
     return role_required(ROLE_TEACHER)(fn)
+
+
+def approved_teacher_required(fn):
+    """Require the teacher role and a currently approved profile."""
+
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        verify_jwt_in_request()
+        if not current_user:
+            return jsonify({"error": "Account not found."}), 404
+        if current_user.is_banned:
+            return jsonify({"error": "This account has been banned."}), 403
+        if current_user.role != ROLE_TEACHER:
+            return jsonify({"error": "You do not have permission to perform this action."}), 403
+        profile = current_user.teacher_profile
+        if profile is None or profile.approval_status != APPROVAL_APPROVED:
+            return jsonify({
+                "error": "Only approved teachers can manage books.",
+                "error_code": "TEACHER_APPROVAL_REQUIRED",
+            }), 403
+        return fn(*args, **kwargs)
+
+    return wrapper
 
 
 def parent_or_teacher_required(fn):

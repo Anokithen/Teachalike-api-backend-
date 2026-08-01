@@ -62,6 +62,12 @@ def get_book_video_folder(user_id, admin_id, book_id, book_name) -> str:
     return f"{get_user_root_folder(user_id)}/Video/{int(admin_id)}/{book}"
 
 
+def get_book_image_folder(user_id, book_id, book_name) -> str:
+    """Return the server-owned image folder for one authored book."""
+    book = f"{int(book_id)}_{sanitize_folder_segment(book_name)}"
+    return f"{get_user_root_folder(user_id)}/Image/Books/{book}"
+
+
 def get_staged_book_media_folder(user_id) -> str:
     """Return the compatibility folder for images uploaded before book creation.
 
