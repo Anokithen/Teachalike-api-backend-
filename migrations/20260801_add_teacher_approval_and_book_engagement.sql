@@ -2,7 +2,7 @@
 -- Teacher-only application fields remain nullable so legacy/admin-created
 -- teachers can be backfilled without inventing personal information.
 
-CREATE TABLE IF NOT EXISTS teacher_profiles (
+CREATE TABLE IF NOT EXISTS teacher_applications (
     id INTEGER NOT NULL AUTO_INCREMENT,
     account_id INTEGER NOT NULL,
     phone_number VARCHAR(40) NULL,
@@ -17,20 +17,20 @@ CREATE TABLE IF NOT EXISTS teacher_profiles (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
-    CONSTRAINT uq_teacher_profiles_account_id UNIQUE (account_id),
-    CONSTRAINT fk_teacher_profiles_account FOREIGN KEY (account_id)
+    CONSTRAINT uq_teacher_applications_account_id UNIQUE (account_id),
+    CONSTRAINT fk_teacher_applications_account FOREIGN KEY (account_id)
         REFERENCES parents (id) ON DELETE CASCADE,
-    CONSTRAINT fk_teacher_profiles_reviewer FOREIGN KEY (reviewed_by_id)
+    CONSTRAINT fk_teacher_applications_reviewer FOREIGN KEY (reviewed_by_id)
         REFERENCES parents (id) ON DELETE SET NULL,
-    INDEX ix_teacher_profiles_approval_status (approval_status),
-    INDEX ix_teacher_profiles_reviewed_by_id (reviewed_by_id)
+    INDEX ix_teacher_applications_approval_status (approval_status),
+    INDEX ix_teacher_applications_reviewed_by_id (reviewed_by_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-INSERT INTO teacher_profiles (account_id, approval_status, created_at, updated_at)
+INSERT INTO teacher_applications (account_id, approval_status, created_at, updated_at)
 SELECT p.id, 'approved', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 FROM parents p
-LEFT JOIN teacher_profiles tp ON tp.account_id = p.id
-WHERE p.role = 'teacher' AND tp.id IS NULL;
+LEFT JOIN teacher_applications ta ON ta.account_id = p.id
+WHERE p.role = 'teacher' AND ta.id IS NULL;
 
 CREATE TABLE IF NOT EXISTS book_views (
     id INTEGER NOT NULL AUTO_INCREMENT,
