@@ -249,6 +249,9 @@ ready.
 web worker deliberately skips automatic table creation on Railway, even if an
 old `AUTO_CREATE_TABLES=true` variable is still present. This keeps Gunicorn
 startup fast and prevents duplicate schema work during restarts or scaling.
+The configured start command is explicitly wrapped in `/bin/sh -c` because
+Railway runs Dockerfile service overrides in exec form; the shell wrapper is
+required for `exec` and runtime variable expansion such as `$PORT`.
 The deployment health check uses `/health`, which verifies that the HTTP
 worker is live without running a database query. `/health/ready` remains
 available when database and schema readiness must be checked explicitly.
