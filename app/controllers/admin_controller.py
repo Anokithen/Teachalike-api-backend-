@@ -1,11 +1,21 @@
 from flask import current_app, jsonify, request
 from flask_jwt_extended import current_user
 from app.extensions import db
+from sqlalchemy import case, func
 from sqlalchemy.exc import IntegrityError
-from app.models.parent_model import Parent, ROLE_PARENT, ROLE_TEACHER, ROLE_ADMIN, VALID_ROLES
+from app.models.parent_model import Parent, ROLE_PARENT, ROLE_TEACHER, ROLE_ADMIN
 from app.models.child_model import Child
 from app.models.book_model import Book
 from app.models.reading_session_model import ReadingSession
+from app.models.book_view_model import BookView
+from app.models.book_like_model import BookLike
+from app.models.teacher_profile_model import (
+    APPROVAL_APPROVED,
+    APPROVAL_REJECTED,
+    TeacherProfile,
+    VALID_APPROVAL_STATUSES,
+)
+from app.utils import utc_now
 from app.services.book_games import create_default_mini_games
 from app.services.account_cleanup_service import collect_account_asset_refs, schedule_account_asset_cleanup
 from app.services.cloudinary_service import (
@@ -65,6 +75,16 @@ def _create_account(role):
         account = Parent(name=str(data.get("name")).strip(), email=email, role=role)
         account.set_password(str(data.get("password")))
         db.session.add(account)
+        if role == ROLE_TEACHER:
+            db.session.flush()
+            db.session.add(
+                TeacherProfile(
+                    account_id=account.id,
+                    approval_status=APPROVAL_APPROVED,
+                    reviewed_by_id=current_user.id,
+                    reviewed_at=utc_now(),
+                )
+            )
         db.session.commit()
         return jsonify(
             {"message": f"{role.capitalize()} account created successfully.", "account": account.to_dict()}
@@ -289,9 +309,165 @@ def list_parents():
     return jsonify({"parents": _list_accounts_by_role(ROLE_PARENT)}), 200
 
 
+def _teacher_admin_dict(account):
+    data = account.to_dict()
+    profile = account.teacher_profile
+    if profile:
+        data.update(profile.to_private_dict())
+    else:
+        data.update(
+            approval_status=APPROVAL_APPROVED,
+            phone_number=None,
+            address=None,
+            teacher_type=None,
+            school_name=None,
+            tuition_name=None,
+            reviewed_by_id=None,
+            reviewed_at=None,
+            rejection_reason=None,
+        )
+    return data
+
+
 def list_teachers():
-    """GET /api/admin/teachers"""
-    return jsonify({"teachers": _list_accounts_by_role(ROLE_TEACHER)}), 200
+    """GET /api/admin/teachers?status=... — private application details."""
+    status = str(request.args.get("status") or "").strip().lower()
+    if status and status not in VALID_APPROVAL_STATUSES:
+        return jsonify({"error": "status must be pending, approved, or rejected."}), 400
+    query = Parent.query.filter_by(role=ROLE_TEACHER)
+    if status:
+        query = query.join(TeacherProfile).filter(
+            TeacherProfile.approval_status == status
+        )
+    accounts = query.order_by(Parent.id.desc()).all()
+    return jsonify({"teachers": [_teacher_admin_dict(item) for item in accounts]}), 200
+
+
+def get_teacher(teacher_id):
+    account = db.session.get(Parent, teacher_id)
+    if not account or account.role != ROLE_TEACHER:
+        return jsonify({"error": "Teacher not found."}), 404
+    return jsonify({"teacher": _teacher_admin_dict(account)}), 200
+
+
+def _review_teacher(teacher_id, approval_status):
+    account = db.session.get(Parent, teacher_id)
+    if not account or account.role != ROLE_TEACHER:
+        return jsonify({"error": "Teacher not found."}), 404
+    profile = account.teacher_profile
+    created_profile = profile is None
+    if profile is None:
+        profile = TeacherProfile(
+            account_id=account.id,
+            approval_status=APPROVAL_APPROVED,
+        )
+        db.session.add(profile)
+
+    data = request.get_json(silent=True) or {}
+    reason = str(data.get("reason") or "").strip()
+    if len(reason) > 1000:
+        return jsonify({"error": "reason must be 1000 characters or fewer."}), 400
+
+    if not created_profile and profile.approval_status == approval_status:
+        return jsonify({
+            "message": f"Teacher is already {approval_status}.",
+            "teacher": _teacher_admin_dict(account),
+        }), 200
+
+    try:
+        profile.approval_status = approval_status
+        profile.reviewed_by_id = current_user.id
+        profile.reviewed_at = utc_now()
+        profile.rejection_reason = reason or None if approval_status == APPROVAL_REJECTED else None
+        db.session.commit()
+        return jsonify({
+            "message": f"Teacher {approval_status} successfully.",
+            "teacher": _teacher_admin_dict(account),
+        }), 200
+    except Exception:
+        db.session.rollback()
+        return jsonify({"error": "The teacher application could not be updated."}), 500
+
+
+def approve_teacher(teacher_id):
+    return _review_teacher(teacher_id, APPROVAL_APPROVED)
+
+
+def reject_teacher(teacher_id):
+    return _review_teacher(teacher_id, APPROVAL_REJECTED)
+
+
+def book_analytics():
+    """Return per-book aggregate engagement without child-level data."""
+    search = str(request.args.get("search") or "").strip()
+    sort = str(request.args.get("sort") or "views").strip().lower()
+    if sort not in {"views", "reads", "likes"}:
+        return jsonify({"error": "sort must be views, reads, or likes."}), 400
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+        per_page = min(100, max(1, int(request.args.get("per_page", 25))))
+    except (TypeError, ValueError):
+        return jsonify({"error": "page and per_page must be positive integers."}), 400
+
+    views = db.session.query(
+        BookView.book_id.label("book_id"),
+        func.count(BookView.id).label("total_views"),
+        func.count(func.distinct(BookView.account_id)).label("unique_viewers"),
+    ).group_by(BookView.book_id).subquery()
+    reads = db.session.query(
+        ReadingSession.book_id.label("book_id"),
+        func.count(ReadingSession.id).label("total_reads"),
+        func.sum(case((ReadingSession.completed_at.isnot(None), 1), else_=0)).label("completed_reads"),
+        func.count(func.distinct(ReadingSession.child_id)).label("unique_readers"),
+    ).group_by(ReadingSession.book_id).subquery()
+    likes = db.session.query(
+        BookLike.book_id.label("book_id"),
+        func.count(BookLike.id).label("likes"),
+    ).group_by(BookLike.book_id).subquery()
+
+    query = db.session.query(
+        Book,
+        func.coalesce(views.c.total_views, 0).label("total_views"),
+        func.coalesce(views.c.unique_viewers, 0).label("unique_viewers"),
+        func.coalesce(reads.c.total_reads, 0).label("total_reads"),
+        func.coalesce(reads.c.completed_reads, 0).label("completed_reads"),
+        func.coalesce(reads.c.unique_readers, 0).label("unique_readers"),
+        func.coalesce(likes.c.likes, 0).label("likes"),
+    ).outerjoin(views, views.c.book_id == Book.id).outerjoin(
+        reads, reads.c.book_id == Book.id
+    ).outerjoin(likes, likes.c.book_id == Book.id)
+    if search:
+        query = query.filter(Book.title.ilike(f"%{search}%"))
+    sort_column = {
+        "views": func.coalesce(views.c.total_views, 0),
+        "reads": func.coalesce(reads.c.total_reads, 0),
+        "likes": func.coalesce(likes.c.likes, 0),
+    }[sort]
+    total = query.count()
+    rows = query.order_by(sort_column.desc(), Book.title.asc()).offset(
+        (page - 1) * per_page
+    ).limit(per_page).all()
+    return jsonify({
+        "books": [
+            {
+                **book.to_dict(),
+                "book_id": book.id,
+                "total_views": int(total_views or 0),
+                "unique_viewers": int(unique_viewers or 0),
+                "total_reads": int(total_reads or 0),
+                "completed_reads": int(completed_reads or 0),
+                "unique_readers": int(unique_readers or 0),
+                "likes": int(like_count or 0),
+            }
+            for book, total_views, unique_viewers, total_reads, completed_reads, unique_readers, like_count in rows
+        ],
+        "pagination": {
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+            "pages": (total + per_page - 1) // per_page,
+        },
+    }), 200
 
 
 def get_parent(parent_id):

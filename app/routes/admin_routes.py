@@ -58,6 +58,24 @@ def register_teacher():
     return ctrl.register_teacher()
 
 
+@admin_bp.route("/teachers/<int:teacher_id>", methods=["GET"])
+@admin_required
+def get_teacher(teacher_id):
+    return ctrl.get_teacher(teacher_id)
+
+
+@admin_bp.route("/teachers/<int:teacher_id>/approve", methods=["PATCH"])
+@admin_required
+def approve_teacher(teacher_id):
+    return ctrl.approve_teacher(teacher_id)
+
+
+@admin_bp.route("/teachers/<int:teacher_id>/reject", methods=["PATCH"])
+@admin_required
+def reject_teacher(teacher_id):
+    return ctrl.reject_teacher(teacher_id)
+
+
 @admin_bp.route("/teachers/<int:teacher_id>/ban", methods=["PATCH"])
 @admin_required
 def ban_teacher(teacher_id):
@@ -114,3 +132,9 @@ def generate_book_draft():
 @admin_required
 def upload_book_media():
     return ctrl.upload_media()
+
+
+@admin_bp.route("/book-analytics", methods=["GET"])
+@admin_required
+def book_analytics():
+    return ctrl.book_analytics()
