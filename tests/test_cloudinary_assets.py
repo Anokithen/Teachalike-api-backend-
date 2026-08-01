@@ -88,8 +88,8 @@ class PathServiceTests(unittest.TestCase):
             "teachalike/7/Audio/Generated_Books_Audio/9_a_book",
         )
         self.assertEqual(
-            get_book_video_folder(7, 2, 9, "A Book"),
-            "teachalike/7/Video/2/9_a_book",
+            get_book_video_folder(7, "Nimal Perera", 9, "A Book"),
+            "teachalike/Books/7_nimal_perera/9_a_book/Video",
         )
         self.assertEqual(
             get_staged_book_media_folder(7),
@@ -1235,10 +1235,7 @@ class AssetEndpointTests(unittest.TestCase):
         self.assertEqual(response.status_code, 201, response.json)
         self.assertEqual(
             upload.call_args.args[1],
-            (
-                f"teachalike/{self.admin.id}/Video/{self.admin.id}/"
-                f"{self.book.id}_same_name"
-            ),
+            f"teachalike/Books/TeachAlike/{self.book.id}_same_name/Video",
         )
         self.assertEqual(
             response.json["data"]["duration_seconds"],

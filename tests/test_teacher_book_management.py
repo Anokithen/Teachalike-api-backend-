@@ -12,7 +12,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from app import create_app
 from app.config import Config
 from app.extensions import db
-from app.models.asset_model import Asset, BOOK_COVER_IMAGE
+from app.models.asset_model import Asset, BOOK_COVER_IMAGE, BOOK_IMAGE
 from app.models.book_model import Book
 from app.models.child_model import Child
 from app.models.parent_model import Parent, ROLE_ADMIN, ROLE_PARENT, ROLE_TEACHER
@@ -224,10 +224,13 @@ class TeacherBookManagementTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 201, response.json)
         book_id = response.json["book"]["id"]
-        asset = Asset.query.filter_by(book_id=book_id, asset_category=BOOK_COVER_IMAGE).one()
+        asset = Asset.query.filter_by(book_id=book_id, asset_category=BOOK_IMAGE).one()
         self.assertEqual(asset.owner_user_id, self.teacher.id)
         call = upload.call_args
-        self.assertIn(f"/{self.teacher.id}/Image/Books/{book_id}_", call.args[1])
+        self.assertEqual(
+            call.args[1],
+            f"teachalike/Books/{self.teacher.id}_nimal_perera/{book_id}_media_story/Images",
+        )
 
     @patch("app.controllers.teacher_book_controller.cleanup_references")
     @patch("app.controllers.teacher_book_controller.upload_asset")
