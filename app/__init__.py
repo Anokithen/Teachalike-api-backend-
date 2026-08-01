@@ -495,12 +495,16 @@ def _prepare_teacher_application_table():
         "(account_id, phone_number, address, teacher_type, school_name, "
         "tuition_name, approval_status, reviewed_by_id, reviewed_at, "
         "rejection_reason, created_at, updated_at) "
-        "SELECT old.account_id, old.phone_number, old.address, old.teacher_type, "
-        "old.school_name, old.tuition_name, old.approval_status, "
-        "old.reviewed_by_id, old.reviewed_at, old.rejection_reason, "
-        "old.created_at, old.updated_at FROM teacher_profiles old "
-        "WHERE NOT EXISTS (SELECT 1 FROM teacher_applications current "
-        "WHERE current.account_id = old.account_id)"
+        "SELECT legacy_application.account_id, legacy_application.phone_number, "
+        "legacy_application.address, legacy_application.teacher_type, "
+        "legacy_application.school_name, legacy_application.tuition_name, "
+        "legacy_application.approval_status, legacy_application.reviewed_by_id, "
+        "legacy_application.reviewed_at, legacy_application.rejection_reason, "
+        "legacy_application.created_at, legacy_application.updated_at "
+        "FROM teacher_profiles legacy_application "
+        "WHERE NOT EXISTS (SELECT 1 FROM teacher_applications "
+        "existing_application WHERE existing_application.account_id = "
+        "legacy_application.account_id)"
     ))
     db.session.commit()
 

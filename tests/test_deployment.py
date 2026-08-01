@@ -333,6 +333,35 @@ class ReadinessTests(unittest.TestCase):
         ), {"account_id": account_id}).scalar_one()
         self.assertEqual(stored_phone, "+94 77 000 0000")
 
+    def test_rows_are_recovered_when_both_teacher_tables_exist(self):
+        db.session.execute(text(
+            "INSERT INTO parents (name, email, password, role, is_banned) "
+            "VALUES ('Interrupted Teacher', 'interrupted@example.com', "
+            "'hash', 'teacher', 0)"
+        ))
+        account_id = db.session.execute(text(
+            "SELECT id FROM parents WHERE email = 'interrupted@example.com'"
+        )).scalar_one()
+        db.session.execute(text(
+            "CREATE TABLE teacher_profiles AS "
+            "SELECT * FROM teacher_applications WHERE 0"
+        ))
+        db.session.execute(text(
+            "INSERT INTO teacher_profiles "
+            "(account_id, phone_number, approval_status, created_at, updated_at) "
+            "VALUES (:account_id, '+94 76 111 1111', 'pending', "
+            "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+        ), {"account_id": account_id})
+        db.session.commit()
+
+        _prepare_teacher_application_table()
+
+        stored_phone = db.session.execute(text(
+            "SELECT phone_number FROM teacher_applications "
+            "WHERE account_id = :account_id"
+        ), {"account_id": account_id}).scalar_one()
+        self.assertEqual(stored_phone, "+94 76 111 1111")
+
     def test_readiness_rejects_an_incomplete_schema(self):
         db.session.execute(text("DROP TABLE revoked_tokens"))
         db.session.commit()
