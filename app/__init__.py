@@ -12,6 +12,57 @@ from app.extensions import db, jwt
 from app.routes import register_blueprints
 
 
+TEACHER_APPLICATION_REQUIRED_COLUMNS = frozenset({
+    "id",
+    "account_id",
+    "phone_number",
+    "address",
+    "teacher_type",
+    "school_name",
+    "tuition_name",
+    "approval_status",
+    "reviewed_by_id",
+    "reviewed_at",
+    "rejection_reason",
+    "created_at",
+    "updated_at",
+})
+MYSQL_SCHEMA_NOT_READY_CODES = frozenset({1054, 1146})
+DATABASE_SCHEMA_NOT_READY_PAYLOAD = {
+    "error": "The database schema is not ready. Run the database migration.",
+    "error_code": "DATABASE_SCHEMA_NOT_READY",
+}
+TEACHER_APPLICATION_COLUMN_DEFINITIONS = {
+    "id": "INTEGER NULL",
+    "account_id": "INTEGER NULL",
+    "phone_number": "VARCHAR(40) NULL",
+    "address": "VARCHAR(500) NULL",
+    "teacher_type": "VARCHAR(30) NULL",
+    "school_name": "VARCHAR(200) NULL",
+    "tuition_name": "VARCHAR(200) NULL",
+    "approval_status": "VARCHAR(20) NULL DEFAULT 'pending'",
+    "reviewed_by_id": "INTEGER NULL",
+    "reviewed_at": "DATETIME NULL",
+    "rejection_reason": "VARCHAR(1000) NULL",
+    "created_at": "DATETIME NULL",
+    "updated_at": "DATETIME NULL",
+}
+TEACHER_APPLICATION_COPY_COLUMNS = (
+    "account_id",
+    "phone_number",
+    "address",
+    "teacher_type",
+    "school_name",
+    "tuition_name",
+    "approval_status",
+    "reviewed_by_id",
+    "reviewed_at",
+    "rejection_reason",
+    "created_at",
+    "updated_at",
+)
+
+
 def create_app(*, initialize_database=None):
     """Create the API app without blocking Railway web-worker startup."""
     app = Flask(__name__)
@@ -153,18 +204,36 @@ def create_app(*, initialize_database=None):
     @app.errorhandler(OperationalError)
     def handle_operational_error(err):
         db.session.rollback()
-        orig = getattr(err, "orig", None)
-        code = orig.args[0] if orig and orig.args else None
+        code = _database_error_code(err)
+        app.logger.exception("Database operational error while handling a request")
+        if code in MYSQL_SCHEMA_NOT_READY_CODES:
+            return jsonify(DATABASE_SCHEMA_NOT_READY_PAYLOAD), 503
         if code == 1049:
-            return jsonify({"error": "Invalid database name configured."}), 500
+            return jsonify({
+                "error": "The configured database is unavailable.",
+                "error_code": "DATABASE_CONFIGURATION_ERROR",
+            }), 500
         if code in (2003, 2002):
-            return jsonify({"error": "MySQL server is not running or not reachable."}), 503
-        return jsonify({"error": "Database connection failed."}), 500
+            return jsonify({
+                "error": "The database is temporarily unavailable.",
+                "error_code": "DATABASE_UNAVAILABLE",
+            }), 503
+        return jsonify({
+            "error": "A database operation failed.",
+            "error_code": "DATABASE_OPERATION_FAILED",
+        }), 500
 
     @app.errorhandler(ProgrammingError)
     def handle_programming_error(err):
         db.session.rollback()
-        return jsonify({"error": "Invalid database name configured."}), 500
+        code = _database_error_code(err)
+        app.logger.exception("Database programming error while handling a request")
+        if code in MYSQL_SCHEMA_NOT_READY_CODES:
+            return jsonify(DATABASE_SCHEMA_NOT_READY_PAYLOAD), 503
+        return jsonify({
+            "error": "A database query could not be completed.",
+            "error_code": "DATABASE_QUERY_FAILED",
+        }), 500
 
     @app.errorhandler(404)
     def handle_not_found(err):
@@ -172,6 +241,7 @@ def create_app(*, initialize_database=None):
 
     @app.errorhandler(500)
     def handle_internal_error(err):
+        app.logger.exception("Unexpected internal server error")
         return jsonify({"error": "An internal server error occurred."}), 500
 
     @app.errorhandler(RequestEntityTooLarge)
@@ -284,15 +354,40 @@ def _initialize_database_schema(app):
 
 
 def _verify_database_schema():
-    """Verify database connectivity and every table registered by the models."""
+    """Verify database connectivity plus required tables and critical columns."""
     db.session.execute(text("SELECT 1"))
-    existing_tables = set(inspect(db.engine).get_table_names())
+    inspector = inspect(db.engine)
+    existing_tables = set(inspector.get_table_names())
     expected_tables = set(db.metadata.tables)
     missing_tables = sorted(expected_tables - existing_tables)
     if missing_tables:
         raise RuntimeError(
             "Required tables are missing: " + ", ".join(missing_tables)
         )
+    application_columns = {
+        column["name"]
+        for column in inspector.get_columns("teacher_applications")
+    }
+    missing_application_columns = sorted(
+        TEACHER_APPLICATION_REQUIRED_COLUMNS - application_columns
+    )
+    if missing_application_columns:
+        raise RuntimeError(
+            "teacher_applications is missing required columns: "
+            + ", ".join(missing_application_columns)
+        )
+
+
+def _database_error_code(err):
+    """Return a numeric MySQL error code without exposing driver messages."""
+    original = getattr(err, "orig", None)
+    args = getattr(original, "args", ())
+    if not args:
+        return None
+    try:
+        return int(args[0])
+    except (TypeError, ValueError):
+        return None
 
 
 def _ensure_voice_profile_schema():
@@ -490,18 +585,35 @@ def _prepare_teacher_application_table():
     # A previously interrupted deployment may have created the new table
     # before moving the old rows. Copy only accounts not already represented;
     # the legacy table remains untouched so this recovery path cannot lose data.
+    _ensure_teacher_application_columns()
+    legacy_columns = {
+        column["name"]
+        for column in inspect(db.engine).get_columns("teacher_profiles")
+    }
+    if "account_id" not in legacy_columns:
+        raise RuntimeError(
+            "teacher_profiles has no account_id column; its rows cannot be "
+            "safely merged without guessing ownership."
+        )
+    fallback_expressions = {
+        "approval_status": "'approved'",
+        "created_at": "CURRENT_TIMESTAMP",
+        "updated_at": "CURRENT_TIMESTAMP",
+    }
+    select_expressions = [
+        (
+            f"legacy_application.{column}"
+            if column in legacy_columns
+            else fallback_expressions.get(column, "NULL")
+        )
+        for column in TEACHER_APPLICATION_COPY_COLUMNS
+    ]
     db.session.execute(text(
-        "INSERT INTO teacher_applications "
-        "(account_id, phone_number, address, teacher_type, school_name, "
-        "tuition_name, approval_status, reviewed_by_id, reviewed_at, "
-        "rejection_reason, created_at, updated_at) "
-        "SELECT legacy_application.account_id, legacy_application.phone_number, "
-        "legacy_application.address, legacy_application.teacher_type, "
-        "legacy_application.school_name, legacy_application.tuition_name, "
-        "legacy_application.approval_status, legacy_application.reviewed_by_id, "
-        "legacy_application.reviewed_at, legacy_application.rejection_reason, "
-        "legacy_application.created_at, legacy_application.updated_at "
-        "FROM teacher_profiles legacy_application "
+        "INSERT INTO teacher_applications ("
+        + ", ".join(TEACHER_APPLICATION_COPY_COLUMNS)
+        + ") SELECT "
+        + ", ".join(select_expressions)
+        + " FROM teacher_profiles legacy_application "
         "WHERE NOT EXISTS (SELECT 1 FROM teacher_applications "
         "existing_application WHERE existing_application.account_id = "
         "legacy_application.account_id)"
@@ -510,19 +622,261 @@ def _prepare_teacher_application_table():
 
 
 def _ensure_teacher_application_schema():
-    """Backfill approved application rows for legacy teacher accounts."""
+    """Additively repair teacher application storage without deleting rows."""
     inspector = inspect(db.engine)
     if not inspector.has_table("teacher_applications"):
-        return
+        from app.models.teacher_application_model import TeacherApplication
+        TeacherApplication.__table__.create(bind=db.engine, checkfirst=True)
+
+    _ensure_teacher_application_columns()
+    dialect = db.engine.dialect.name
+
+    # Only fill values that are absent. Existing pending/approved/rejected
+    # decisions and timestamps are never overwritten.
+    db.session.execute(text(
+        "UPDATE teacher_applications SET approval_status = 'pending' "
+        "WHERE approval_status IS NULL"
+    ))
+    db.session.execute(text(
+        "UPDATE teacher_applications SET created_at = CURRENT_TIMESTAMP "
+        "WHERE created_at IS NULL"
+    ))
+    db.session.execute(text(
+        "UPDATE teacher_applications SET updated_at = CURRENT_TIMESTAMP "
+        "WHERE updated_at IS NULL"
+    ))
+
+    null_account_count = db.session.execute(text(
+        "SELECT COUNT(*) FROM teacher_applications WHERE account_id IS NULL"
+    )).scalar_one()
+    if null_account_count:
+        raise RuntimeError(
+            "teacher_applications contains rows without account_id; ownership "
+            "cannot be inferred safely, so no rows were deleted."
+        )
+    duplicate_account = db.session.execute(text(
+        "SELECT account_id FROM teacher_applications "
+        "GROUP BY account_id HAVING COUNT(*) > 1 LIMIT 1"
+    )).scalar()
+    if duplicate_account is not None:
+        raise RuntimeError(
+            "teacher_applications contains duplicate rows for an account; "
+            "the unique account constraint cannot be added without a manual "
+            "data review. No rows were deleted."
+        )
+
+    # Allocate new identity values above the current maximum. Using account_id
+    # directly could collide with an unrelated preserved id value.
+    next_id = db.session.execute(text(
+        "SELECT COALESCE(MAX(id), 0) FROM teacher_applications"
+    )).scalar_one()
+    missing_id_accounts = db.session.execute(text(
+        "SELECT account_id FROM teacher_applications WHERE id IS NULL "
+        "ORDER BY account_id"
+    )).scalars().all()
+    for account_id in missing_id_accounts:
+        next_id += 1
+        db.session.execute(text(
+            "UPDATE teacher_applications SET id = :id "
+            "WHERE account_id = :account_id AND id IS NULL"
+        ), {"id": next_id, "account_id": account_id})
+    null_id_count = db.session.execute(text(
+        "SELECT COUNT(*) FROM teacher_applications WHERE id IS NULL"
+    )).scalar_one()
+    duplicate_id = db.session.execute(text(
+        "SELECT id FROM teacher_applications "
+        "GROUP BY id HAVING COUNT(*) > 1 LIMIT 1"
+    )).scalar()
+    if null_id_count or duplicate_id is not None:
+        raise RuntimeError(
+            "teacher_applications has invalid id values; automatic repair "
+            "stopped without deleting or replacing any rows."
+        )
+
+    invalid_status = db.session.execute(text(
+        "SELECT approval_status FROM teacher_applications "
+        "WHERE approval_status NOT IN ('pending', 'approved', 'rejected') "
+        "LIMIT 1"
+    )).scalar()
+    if invalid_status is not None:
+        raise RuntimeError(
+            "teacher_applications contains an unsupported approval_status; "
+            "automatic repair stopped without changing that value."
+        )
+
+    _ensure_teacher_application_identity_key()
+    _ensure_teacher_application_index(
+        ("account_id",), "uq_teacher_applications_account_id", unique=True
+    )
+    _ensure_teacher_application_index(
+        ("approval_status",), "ix_teacher_applications_approval_status"
+    )
+    _ensure_teacher_application_index(
+        ("reviewed_by_id",), "ix_teacher_applications_reviewed_by_id"
+    )
+
+    if dialect == "sqlite":
+        db.session.execute(text(
+            "CREATE TRIGGER IF NOT EXISTS trg_teacher_applications_assign_id "
+            "AFTER INSERT ON teacher_applications FOR EACH ROW "
+            "WHEN NEW.id IS NULL BEGIN UPDATE teacher_applications "
+            "SET id = (SELECT COALESCE(MAX(id), 0) + 1 "
+            "FROM teacher_applications WHERE rowid != NEW.rowid) "
+            "WHERE rowid = NEW.rowid; END"
+        ))
+    elif dialect == "mysql":
+        _ensure_teacher_application_mysql_constraints()
+
     db.session.execute(
         text(
             "INSERT INTO teacher_applications "
             "(account_id, approval_status, created_at, updated_at) "
             "SELECT p.id, 'approved', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP "
             "FROM parents p LEFT JOIN teacher_applications ta ON ta.account_id = p.id "
-            "WHERE p.role = 'teacher' AND ta.id IS NULL"
+            "WHERE p.role = 'teacher' AND ta.account_id IS NULL"
         )
     )
+    if dialect == "sqlite":
+        db.session.execute(text(
+            "UPDATE teacher_applications SET id = rowid WHERE id IS NULL"
+        ))
+    db.session.commit()
+
+
+def _ensure_teacher_application_columns():
+    """Add every missing application column with non-destructive ALTERs."""
+    inspector = inspect(db.engine)
+    if not inspector.has_table("teacher_applications"):
+        return
+    existing_columns = {
+        column["name"]
+        for column in inspector.get_columns("teacher_applications")
+    }
+    for column, definition in TEACHER_APPLICATION_COLUMN_DEFINITIONS.items():
+        if column in existing_columns:
+            continue
+        statement = (
+            f"ALTER TABLE teacher_applications ADD COLUMN {column} {definition}"
+        )
+        db.session.execute(text(statement))
+    db.session.commit()
+
+
+def _teacher_application_keys():
+    """Return indexed column tuples with their uniqueness guarantees."""
+    inspector = inspect(db.engine)
+    keys = []
+    for index in inspector.get_indexes("teacher_applications"):
+        columns = tuple(index.get("column_names") or ())
+        if columns:
+            keys.append((columns, bool(index.get("unique"))))
+    for constraint in inspector.get_unique_constraints("teacher_applications"):
+        columns = tuple(constraint.get("column_names") or ())
+        if columns:
+            keys.append((columns, True))
+    primary_columns = tuple(
+        inspector.get_pk_constraint("teacher_applications").get(
+            "constrained_columns"
+        ) or ()
+    )
+    if primary_columns:
+        keys.append((primary_columns, True))
+    return keys
+
+
+def _teacher_application_index_name_exists(name):
+    """Avoid duplicate DDL when a renamed SQLite index is not reflected."""
+    if db.engine.dialect.name == "sqlite":
+        return db.session.execute(text(
+            "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = :name"
+        ), {"name": name}).scalar() is not None
+    return any(
+        index.get("name") == name
+        for index in inspect(db.engine).get_indexes("teacher_applications")
+    )
+
+
+def _ensure_teacher_application_index(columns, name, *, unique=False):
+    """Create one required index only when its columns are not already covered."""
+    for indexed_columns, is_unique in _teacher_application_keys():
+        if indexed_columns == tuple(columns) and (is_unique or not unique):
+            return
+    if _teacher_application_index_name_exists(name):
+        return
+    unique_sql = "UNIQUE " if unique else ""
+    db.session.execute(text(
+        f"CREATE {unique_sql}INDEX {name} ON teacher_applications "
+        f"({', '.join(columns)})"
+    ))
+    db.session.commit()
+
+
+def _ensure_teacher_application_identity_key():
+    """Ensure id is a single unique key without adding a redundant index."""
+    keys = _teacher_application_keys()
+    if any(columns == ("id",) and unique for columns, unique in keys):
+        return
+    inspector = inspect(db.engine)
+    primary_columns = tuple(
+        inspector.get_pk_constraint("teacher_applications").get(
+            "constrained_columns"
+        ) or ()
+    )
+    if db.engine.dialect.name == "mysql" and not primary_columns:
+        db.session.execute(text(
+            "ALTER TABLE teacher_applications ADD PRIMARY KEY (id)"
+        ))
+        db.session.commit()
+        return
+    _ensure_teacher_application_index(
+        ("id",), "uq_teacher_applications_id", unique=True
+    )
+
+
+def _ensure_teacher_application_mysql_constraints():
+    """Enforce MySQL identity, nullability, and account foreign keys."""
+    inspector = inspect(db.engine)
+    id_column = next(
+        column for column in inspector.get_columns("teacher_applications")
+        if column["name"] == "id"
+    )
+    if not id_column.get("autoincrement"):
+        db.session.execute(text(
+            "ALTER TABLE teacher_applications MODIFY COLUMN "
+            "id INTEGER NOT NULL AUTO_INCREMENT"
+        ))
+
+    db.session.execute(text(
+        "ALTER TABLE teacher_applications "
+        "MODIFY COLUMN account_id INTEGER NOT NULL, "
+        "MODIFY COLUMN approval_status VARCHAR(20) NOT NULL DEFAULT 'pending', "
+        "MODIFY COLUMN created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+        "MODIFY COLUMN updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP "
+        "ON UPDATE CURRENT_TIMESTAMP"
+    ))
+
+    inspector = inspect(db.engine)
+    foreign_keys = inspector.get_foreign_keys("teacher_applications")
+    if not any(
+        fk.get("constrained_columns") == ["account_id"]
+        and fk.get("referred_table") == "parents"
+        for fk in foreign_keys
+    ):
+        db.session.execute(text(
+            "ALTER TABLE teacher_applications ADD CONSTRAINT "
+            "fk_teacher_applications_account_repair FOREIGN KEY (account_id) "
+            "REFERENCES parents(id) ON DELETE CASCADE"
+        ))
+    if not any(
+        fk.get("constrained_columns") == ["reviewed_by_id"]
+        and fk.get("referred_table") == "parents"
+        for fk in foreign_keys
+    ):
+        db.session.execute(text(
+            "ALTER TABLE teacher_applications ADD CONSTRAINT "
+            "fk_teacher_applications_reviewer_repair FOREIGN KEY (reviewed_by_id) "
+            "REFERENCES parents(id) ON DELETE SET NULL"
+        ))
     db.session.commit()
 
 

@@ -218,6 +218,9 @@ def register_teacher():
     except Exception:
         db.session.rollback()
         _cleanup_teacher_creation_upload(metadata)
+        current_app.logger.exception(
+            "Unexpected failure while an admin created a teacher account"
+        )
         return jsonify({"error": "The teacher account could not be created."}), 500
 
 
@@ -421,7 +424,10 @@ def list_teachers():
         return jsonify({"error": "status must be pending, approved, or rejected."}), 400
     query = Parent.query.filter_by(role=ROLE_TEACHER)
     if status:
-        query = query.join(TeacherApplication).filter(
+        query = query.join(
+            TeacherApplication,
+            TeacherApplication.account_id == Parent.id,
+        ).filter(
             TeacherApplication.approval_status == status
         )
     accounts = query.order_by(Parent.id.desc()).all()
@@ -471,6 +477,9 @@ def _review_teacher(teacher_id, approval_status):
         }), 200
     except Exception:
         db.session.rollback()
+        current_app.logger.exception(
+            "Unexpected failure while reviewing a teacher application"
+        )
         return jsonify({"error": "The teacher application could not be updated."}), 500
 
 

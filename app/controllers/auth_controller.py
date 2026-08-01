@@ -269,6 +269,11 @@ def register():
         db.session.rollback()
         if account_type == ROLE_TEACHER and "metadata" in locals():
             _cleanup_registration_upload(metadata)
+        current_app.logger.exception(
+            "Database failure while saving a public teacher application"
+            if account_type == ROLE_TEACHER
+            else "Database failure while creating a parent account"
+        )
         message = (
             "Teacher registration metadata could not be saved."
             if account_type == ROLE_TEACHER
@@ -279,6 +284,11 @@ def register():
         db.session.rollback()
         if account_type == ROLE_TEACHER and "metadata" in locals():
             _cleanup_registration_upload(metadata)
+        current_app.logger.exception(
+            "Unexpected failure while saving a public teacher application"
+            if account_type == ROLE_TEACHER
+            else "Unexpected failure while creating a parent account"
+        )
         return jsonify({"error": "An internal server error occurred."}), 500
 
 
