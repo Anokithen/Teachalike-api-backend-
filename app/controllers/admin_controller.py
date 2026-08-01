@@ -3,7 +3,7 @@ from flask_jwt_extended import current_user
 from app.extensions import db
 from sqlalchemy import case, func, or_
 from sqlalchemy.exc import IntegrityError
-from app.models.parent_model import Parent, ROLE_PARENT, ROLE_TEACHER, ROLE_ADMIN
+from app.models.parent_model import Parent, ROLE_PARENT, ROLE_TEACHER
 from app.models.child_model import Child
 from app.models.book_model import Book
 from app.models.reading_session_model import ReadingSession
@@ -238,11 +238,6 @@ def _cleanup_teacher_creation_upload(metadata):
             "Admin teacher creation upload cleanup failed for asset_id=%s",
             metadata.get("asset_id"),
         )
-
-
-def register_admin():
-    """POST /api/admin/admins — an existing admin creates another admin account."""
-    return _create_account(ROLE_ADMIN)
 
 
 def create_book():

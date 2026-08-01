@@ -332,6 +332,20 @@ class SecurityTests(unittest.TestCase):
         )
         self.assertEqual(forbidden.status_code, 403)
 
+    def test_admin_cannot_create_another_admin(self):
+        response = self._post(
+            "/api/admin/admins",
+            headers=self._headers(self.admin),
+            json={
+                "name": "Second Admin",
+                "email": "second-admin@example.com",
+                "password": "SecurePass123!",
+            },
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertIsNone(Parent.query.filter_by(email="second-admin@example.com").first())
+
     def test_malformed_teacher_parent_id_is_rejected(self):
         teacher = Parent(
             name="Teacher",

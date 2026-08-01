@@ -94,14 +94,6 @@ def delete_teacher(teacher_id):
     return ctrl.delete_account(teacher_id, ROLE_TEACHER)
 
 
-# --- Other admins (bootstrap additional admin accounts) -------------------
-
-@admin_bp.route("/admins", methods=["POST"])
-@admin_required
-def register_admin():
-    return ctrl.register_admin()
-
-
 # --- Books --------------------------------------------------------------
 
 @admin_bp.route("/books", methods=["POST"])
