@@ -9,7 +9,7 @@ from unittest.mock import patch
 from flask_jwt_extended import create_access_token
 from sqlalchemy.exc import SQLAlchemyError
 
-from app import create_app, _ensure_teacher_profile_schema
+from app import create_app, _ensure_teacher_application_schema
 from app.config import Config
 from app.extensions import db
 from app.models.asset_model import Asset, USER_PROFILE_IMAGE
@@ -19,11 +19,11 @@ from app.models.book_view_model import BookView
 from app.models.child_model import Child
 from app.models.parent_model import Parent, ROLE_ADMIN, ROLE_PARENT, ROLE_TEACHER
 from app.models.reading_session_model import ReadingSession
-from app.models.teacher_profile_model import (
+from app.models.teacher_application_model import (
     APPROVAL_APPROVED,
     APPROVAL_PENDING,
     APPROVAL_REJECTED,
-    TeacherProfile,
+    TeacherApplication,
 )
 from app.security import anonymized_key, login_attempts, registration_attempts
 from app.utils import utc_now
@@ -52,7 +52,7 @@ class TeacherApprovalAndEngagementTests(unittest.TestCase):
         self.admin = self._account("Admin", "admin.engagement@example.com", ROLE_ADMIN)
         self.teacher = self._account("Teacher", "approved.teacher@example.com", ROLE_TEACHER)
         db.session.flush()
-        self.teacher.teacher_profile = TeacherProfile(approval_status=APPROVAL_APPROVED)
+        self.teacher.teacher_application = TeacherApplication(approval_status=APPROVAL_APPROVED)
         self.child = Child(parent_id=self.parent.id, created_by_id=self.parent.id, name="Reader", age=8)
         self.other_child = Child(parent_id=self.other.id, created_by_id=self.other.id, name="Other reader", age=9)
         self.book = Book(title="Engagement Book", age_group="7-9", reading_level="beginner")
@@ -168,7 +168,7 @@ class TeacherApprovalAndEngagementTests(unittest.TestCase):
         teacher = Parent.query.filter_by(email="public.teacher@example.com").one()
         self.assertEqual(teacher.role, ROLE_TEACHER)
         self.assertFalse(teacher.is_banned)
-        self.assertEqual(teacher.teacher_profile.approval_status, APPROVAL_PENDING)
+        self.assertEqual(teacher.teacher_application.approval_status, APPROVAL_PENDING)
         self.assertEqual(teacher.profile_image_url, "https://res.cloudinary.test/profile.png")
         self.assertEqual(Asset.query.filter_by(owner_user_id=teacher.id, asset_category=USER_PROFILE_IMAGE).count(), 1)
 
@@ -192,8 +192,8 @@ class TeacherApprovalAndEngagementTests(unittest.TestCase):
         pending = self._account("Pending", "pending.login@example.com", ROLE_TEACHER)
         rejected = self._account("Rejected", "rejected.login@example.com", ROLE_TEACHER)
         db.session.flush()
-        pending.teacher_profile = TeacherProfile(approval_status=APPROVAL_PENDING)
-        rejected.teacher_profile = TeacherProfile(approval_status=APPROVAL_REJECTED, rejection_reason="Photo is unclear.")
+        pending.teacher_application = TeacherApplication(approval_status=APPROVAL_PENDING)
+        rejected.teacher_application = TeacherApplication(approval_status=APPROVAL_REJECTED, rejection_reason="Photo is unclear.")
         db.session.commit()
 
         pending_login = self._post("/api/auth/login", json={"email": pending.email, "password": "SecurePass123!"})
@@ -211,7 +211,7 @@ class TeacherApprovalAndEngagementTests(unittest.TestCase):
 
     def test_status_change_blocks_existing_access_and_refresh_tokens(self):
         login = self._post("/api/auth/login", json={"email": self.teacher.email, "password": "SecurePass123!"})
-        self.teacher.teacher_profile.approval_status = APPROVAL_REJECTED
+        self.teacher.teacher_application.approval_status = APPROVAL_REJECTED
         db.session.commit()
         access = self.client.get("/api/parents/me", headers={"Authorization": f"Bearer {login.json['access_token']}"})
         refresh = self._post("/api/auth/refresh", headers={"Authorization": f"Bearer {login.json['refresh_token']}"})
@@ -225,10 +225,10 @@ class TeacherApprovalAndEngagementTests(unittest.TestCase):
         upload_asset.return_value = self._cloudinary_metadata()
         legacy = self._account("Legacy", "legacy.teacher@example.com", ROLE_TEACHER)
         db.session.commit()
-        self.assertIsNone(legacy.teacher_profile)
-        _ensure_teacher_profile_schema()
+        self.assertIsNone(legacy.teacher_application)
+        _ensure_teacher_application_schema()
         db.session.expire_all()
-        self.assertEqual(db.session.get(Parent, legacy.id).teacher_profile.approval_status, APPROVAL_APPROVED)
+        self.assertEqual(db.session.get(Parent, legacy.id).teacher_application.approval_status, APPROVAL_APPROVED)
 
         created = self._post(
             "/api/admin/teachers",
@@ -247,13 +247,13 @@ class TeacherApprovalAndEngagementTests(unittest.TestCase):
         )
         self.assertEqual(created.status_code, 201, created.json)
         account = Parent.query.filter_by(email="admin.created@example.com").one()
-        self.assertEqual(account.teacher_profile.approval_status, APPROVAL_APPROVED)
-        self.assertEqual(account.teacher_profile.reviewed_by_id, self.admin.id)
-        self.assertEqual(account.teacher_profile.phone_number, "+94 71 555 0101")
-        self.assertEqual(account.teacher_profile.address, "20 School Lane, Colombo")
-        self.assertEqual(account.teacher_profile.teacher_type, "school")
-        self.assertEqual(account.teacher_profile.school_name, "TeachAlike Academy")
-        self.assertIsNone(account.teacher_profile.tuition_name)
+        self.assertEqual(account.teacher_application.approval_status, APPROVAL_APPROVED)
+        self.assertEqual(account.teacher_application.reviewed_by_id, self.admin.id)
+        self.assertEqual(account.teacher_application.phone_number, "+94 71 555 0101")
+        self.assertEqual(account.teacher_application.address, "20 School Lane, Colombo")
+        self.assertEqual(account.teacher_application.teacher_type, "school")
+        self.assertEqual(account.teacher_application.school_name, "TeachAlike Academy")
+        self.assertIsNone(account.teacher_application.tuition_name)
         self.assertEqual(account.profile_image_url, "https://res.cloudinary.test/profile.png")
         self.assertEqual(
             Asset.query.filter_by(
@@ -283,8 +283,8 @@ class TeacherApprovalAndEngagementTests(unittest.TestCase):
         self.assertEqual(missing.status_code, 404)
 
     def test_private_teacher_fields_are_not_in_ordinary_serialization(self):
-        self.teacher.teacher_profile.phone_number = "secret phone"
-        self.teacher.teacher_profile.address = "secret address"
+        self.teacher.teacher_application.phone_number = "secret phone"
+        self.teacher.teacher_application.address = "secret address"
         db.session.commit()
         ordinary = self.teacher.to_dict()
         self.assertNotIn("phone_number", ordinary)
