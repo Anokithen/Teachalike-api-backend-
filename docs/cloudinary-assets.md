@@ -46,6 +46,19 @@ upload creates its logical folder through Cloudinary's dynamic-folder
 
 ```text
 teachalike/
+├── Books/
+│   ├── {teacher_id}_{sanitized_teacher_name}/
+│   │   └── {book_id}_{sanitized_book_name}/
+│   │       ├── Images/
+│   │       │   ├── cover
+│   │       │   └── picture_01, picture_02, ...
+│   │       ├── Video/video_01
+│   │       └── Teacher_voice_audio/voice_audio_teacher
+│   └── TeachAlike/
+│       └── {book_id}_{sanitized_book_name}/
+│           ├── Images/
+│           ├── Video/
+│           └── Teacher_voice_audio/
 └── {user_id}/
     ├── Audio/
     │   ├── Voice_profiles/
@@ -59,11 +72,14 @@ teachalike/
     │   └── Children_profile/
     │       └── {child_id}_{sanitized_child_name}/
     │           └── profile.{extension}
-    └── Video/
-        └── {admin_id}/
-            └── {book_id}_{sanitized_book_name}/
-                └── {safe_name}_{uuid}.{extension}
 ```
+
+The centralized `Books` tree applies to newly uploaded catalog images,
+videos, and official teacher narration. Each `Book.asset_root_folder` is saved
+the first time the book is initialized and remains authoritative after teacher
+or title renames. IDs prevent same-name collisions. Existing ledger URLs and
+public IDs are never moved or rewritten. Personalized parent/child narration
+continues using `Generated_Books_Audio` under its account owner.
 
 The compatibility cover/illustration uploader uses
 `teachalike/{admin_id}/Image/Book_media`; it no longer uses the legacy
@@ -84,6 +100,7 @@ so `profile` cannot collide between accounts.
 | Voice-profile sample | `video` | `authenticated` |
 | Generated narration | `video` | `authenticated` |
 | Book video | `video` | `upload` |
+| Official teacher narration | `video` | `authenticated` |
 
 Cloudinary represents audio as a `video` resource. The API performs an
 ownership check, signs the authenticated resource server-side, and streams it
@@ -116,6 +133,28 @@ and `503` for storage/provider failures.
 ## Endpoints
 
 All endpoints require the existing JWT/role middleware.
+
+- `POST /api/books/:book_id/images` — owning approved teacher or admin; accepts
+  only `file`, `image_kind=cover|picture`, and ordered `position` for pictures.
+- `POST /api/admin/books/:book_id/images` — admin compatibility route using the
+  same server-derived path workflow.
+- `POST /api/books/:book_id/video` and the existing admin video route — upload
+  or replace `video_01`.
+- `POST /api/books/:book_id/teacher-audio` — upload/replace the official teacher
+  narration as `voice_audio_teacher`.
+- `GET /api/books/:book_id/teacher-audio` — authenticated protected playback.
+- `DELETE /api/books/:book_id/teacher-audio` — owner/admin removal.
+
+Clients never submit teacher IDs, asset owners, folders, full paths, or public
+IDs. `BOOK_IMAGE`, `BOOK_VIDEO`, and `TEACHER_BOOK_AUDIO` ledger rows retain the
+exact Cloudinary identity, folder, delivery type, dimensions/duration, and file
+metadata needed for replacement and cleanup.
+
+Book deletion confirms deletion of every active registered Cloudinary resource
+before deleting the book. Failed provider cleanup is stored as
+`cleanup_failed`, leaves the book present, and can be retried safely. Teacher
+account deletion nulls book-asset ownership but preserves the book, canonical
+root, URLs, and ledger rows.
 
 - `POST /api/assets/profile-image`
 - `POST /api/assets/children/{child_id}/profile-image`
@@ -165,6 +204,9 @@ existing MySQL database. The migration creates the `assets` ledger if absent,
 adds ownership/entity foreign keys and indexes, and removes the old
 one-narration-per-book/voice cache index. Fresh test databases use the same ORM
 shape through `db.create_all()`.
+Apply `migrations/20260803_cloudinary_book_structure.sql` after the ownership
+migration, then run `python -m app.database_setup` to backfill canonical book
+roots without contacting Cloudinary.
 
 The ledger stores the Cloudinary asset/public IDs, secure URL, resource and
 delivery types, format, folder, original name, byte size, dimensions,
@@ -198,11 +240,12 @@ resource type, delivery type, overwrite, invalidation, and timeout controls.
 Callers cannot smuggle these through generic SDK options and bypass the
 server-derived identity.
 
-Account deletion snapshots every database-owned Cloudinary identity before
+Account deletion snapshots ordinary account Cloudinary identities before
 MySQL cascades run, then asynchronously deletes those exact assets and
-ElevenLabs voice IDs. Legacy model references are included only when no ledger
-row already owns that public ID. Cleanup never accepts or recursively deletes
-a client-provided prefix.
+ElevenLabs voice IDs. Book-owned catalog media is deliberately excluded: its
+ledger owner becomes NULL while the book ID and exact identity remain for
+future admin replacement or deletion. Cleanup never accepts or recursively
+deletes a client-provided prefix.
 
 ## Tests
 

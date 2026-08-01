@@ -77,7 +77,7 @@ ignored and cannot change attribution.
 
 - `POST /api/books` accepts JSON or `multipart/form-data` and an optional
   8–64 character `Idempotency-Key`. Multipart files are `cover_image`, up to
-  eight `illustrations`, and optional `video`.
+  eight `illustrations`, optional `video`, and optional `teacher_audio`.
 - `GET /api/teacher/books` lists only the current teacher's books with aggregate
   views, reads, and likes.
 - `GET /api/teacher/books/<book_id>` returns one owned editing record.
@@ -94,15 +94,37 @@ display `Created by TeachAlike`. The name snapshot remains after an account is
 deleted, while the nullable owner foreign key uses `ON DELETE SET NULL`; the
 book and its delivery media are not deleted with the teacher.
 
-Teacher media uses server-generated folders beneath
-`teachalike/<teacher_id>/Image/Books/<book_id>_<title>` and the corresponding
-server-generated video folder. Extension, MIME, signature, and configured size
-limits are checked before upload. Cover, illustration, and video metadata is
-recorded in the existing `assets` ledger; MySQL never receives raw bytes. New
-uploads are removed from Cloudinary if their database transaction fails, and
-replaced/deleted managed assets follow the existing confirmed cleanup path.
-Teacher-created books use the same mini-games, narration, reading sessions,
-daily views, child likes, and admin analytics as every other book.
+Teacher media uses the centralized, server-generated folders documented below.
+Extension, MIME, signature, and configured size limits are checked before
+upload. Image, video, and teacher-audio metadata is recorded in the existing
+`assets` ledger; MySQL never receives raw bytes. New uploads are removed from
+Cloudinary if their database transaction fails, and replaced/deleted managed
+assets follow the existing confirmed cleanup path. Teacher-created books use
+the same mini-games, narration, reading sessions, daily views, child likes, and
+admin analytics as every other book.
+
+### Centralized Cloudinary book storage
+
+New book-owned images, videos, and official teacher narration use one persisted
+canonical root:
+
+```text
+teachalike/Books/<teacher_id>_<teacher_name>/<book_id>_<book_name>/Images/cover
+teachalike/Books/<teacher_id>_<teacher_name>/<book_id>_<book_name>/Images/picture_01
+teachalike/Books/<teacher_id>_<teacher_name>/<book_id>_<book_name>/Video/video_01
+teachalike/Books/<teacher_id>_<teacher_name>/<book_id>_<book_name>/Teacher_voice_audio/voice_audio_teacher
+```
+
+Admin/legacy books use `teachalike/Books/TeachAlike/<book_id>_<book_name>`.
+Names are sanitized server-side and IDs prevent collisions. The saved
+`books.asset_root_folder` is not exposed through book responses and remains
+unchanged after renames. No old Cloudinary asset is moved or deleted by this
+schema change; profile images, voice profiles, and personalized narration keep
+their existing account-based paths.
+
+Official teacher audio is separate from personalized cloned narration. Only
+the approved owning teacher or an admin may upload/replace it, and protected
+playback is proxied through `GET /api/books/<book_id>/teacher-audio`.
 
 ## Teacher and engagement database migration
 
@@ -140,6 +162,19 @@ still deleted by the transactional account-cleanup workflow. Railway's
 pre-deploy compatibility initializer performs the equivalent schema checks, so
 `/health/ready` and `db.create_all()` deployments continue to work. No new
 environment variables are required.
+
+For the centralized Cloudinary book root, then apply:
+
+```bash
+mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p "$DB_NAME" \
+  < migrations/20260803_cloudinary_book_structure.sql
+python -m app.database_setup
+```
+
+The SQL adds only the nullable canonical-root column. `database_setup`
+backfills it with the same application sanitizer and saved creator records.
+It does not call Cloudinary or move existing files. No new environment variable
+is required.
 
 Run the complete backend suite without external Cloudinary calls using:
 
