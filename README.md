@@ -11,7 +11,7 @@ Teacher registration uses `multipart/form-data` with `account_type=teacher`,
 `name`, `email`, `password`, `phone_number`, `address`, `teacher_type` (`school`
 or `private_tuition`), the optional matching `school_name`/`tuition_name`, and a
 required `professional_photo`. A valid submission creates the existing
-`parents` account with role `teacher`, a one-to-one `teacher_profiles` row, and
+`parents` account with role `teacher`, a one-to-one `teacher_applications` row, and
 returns `202` without tokens.
 
 Approval statuses mean:
@@ -130,7 +130,8 @@ playback is proxied through `GET /api/books/<book_id>/teacher-audio`.
 
 The new SQLAlchemy models are registered before `db.create_all()`. Railway's
 existing pre-deploy command (`python -m app.database_setup`) creates missing
-tables, backfills teacher accounts without profiles as `approved`, and verifies
+tables, renames the former `teacher_profiles` table without losing its rows,
+backfills teacher accounts without applications as `approved`, and verifies
 them for `/health/ready`.
 
 For an existing MySQL database managed manually, apply the idempotent migration
@@ -138,13 +139,14 @@ before deploying the new application version:
 
 ```bash
 mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p "$DB_NAME" \
-  < migrations/20260801_add_teacher_approval_and_book_engagement.sql
+  < migrations/20260804_create_teacher_applications.sql
 ```
 
-The migration creates `teacher_profiles`, `book_views`, and `book_likes` with
-foreign keys, cascade behavior, indexes, and uniqueness constraints, then
-backfills legacy teachers. It does not reset or delete existing data. No new
-environment variables are required.
+The migration creates `teacher_applications`, or renames the former
+`teacher_profiles` table when it exists, then backfills legacy teachers. It
+does not reset or delete existing data. No new environment variables are
+required. The earlier `20260801` migration remains the combined bootstrap for
+teacher applications, book views, and book likes on a completely new database.
 
 After that migration, apply the idempotent ownership migration:
 
