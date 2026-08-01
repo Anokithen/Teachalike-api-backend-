@@ -12,6 +12,8 @@ from app.extensions import db
 from app.middleware import can_access_child
 from app.models.asset_model import (
     Asset,
+    BOOK_COVER_IMAGE,
+    BOOK_ILLUSTRATION,
     BOOK_VIDEO,
     CHILD_PROFILE_IMAGE,
     GENERATED_BOOK_AUDIO,
@@ -545,6 +547,17 @@ def delete_stored_asset(asset_id):
                 book.video_url = (
                     replacement.cloudinary_secure_url if replacement else None
                 )
+        elif asset.asset_category == BOOK_COVER_IMAGE and asset.book_id:
+            book = db.session.get(Book, asset.book_id)
+            if book and book.cover_image_url == asset.cloudinary_secure_url:
+                book.cover_image_url = None
+        elif asset.asset_category == BOOK_ILLUSTRATION and asset.book_id:
+            book = db.session.get(Book, asset.book_id)
+            if book:
+                book.image_urls = [
+                    url for url in (book.image_urls or [])
+                    if url != asset.cloudinary_secure_url
+                ]
         db.session.commit()
         return _response("Asset deleted.", asset.to_dict())
     except CloudinaryServiceError:

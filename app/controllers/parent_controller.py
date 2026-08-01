@@ -4,7 +4,11 @@ from app.extensions import db
 from sqlalchemy.exc import IntegrityError
 from app.models.parent_model import Parent
 from app.security import account_password_attempts
-from app.services.account_cleanup_service import collect_account_asset_refs, schedule_account_asset_cleanup
+from app.services.account_cleanup_service import (
+    collect_account_asset_refs,
+    remove_account_asset_ledger_rows,
+    schedule_account_asset_cleanup,
+)
 from app.validators import (
     MAX_PASSWORD_LENGTH,
     validate_account_email,
@@ -150,6 +154,7 @@ def delete_me():
     parent = current_user
     try:
         asset_refs = collect_account_asset_refs(parent)
+        remove_account_asset_ledger_rows(parent.id)
         db.session.delete(parent)  # cascades to children & voice_profiles
         db.session.commit()
         account_password_attempts.reset(password_attempt_key)

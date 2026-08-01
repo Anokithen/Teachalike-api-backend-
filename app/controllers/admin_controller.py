@@ -1,7 +1,7 @@
 from flask import current_app, jsonify, request
 from flask_jwt_extended import current_user
 from app.extensions import db
-from sqlalchemy import case, func
+from sqlalchemy import case, func, or_
 from sqlalchemy.exc import IntegrityError
 from app.models.parent_model import Parent, ROLE_PARENT, ROLE_TEACHER, ROLE_ADMIN
 from app.models.child_model import Child
@@ -17,7 +17,11 @@ from app.models.teacher_profile_model import (
 )
 from app.utils import utc_now
 from app.services.book_games import create_default_mini_games
-from app.services.account_cleanup_service import collect_account_asset_refs, schedule_account_asset_cleanup
+from app.services.account_cleanup_service import (
+    collect_account_asset_refs,
+    remove_account_asset_ledger_rows,
+    schedule_account_asset_cleanup,
+)
 from app.services.cloudinary_service import (
     CloudinaryServiceError,
     upload_book_media,
@@ -27,12 +31,13 @@ from app.services.gemini_service import GeminiError, generate_book_draft as gene
 from app.services.groq_service import GroqError, generate_book_draft as generate_groq_book_draft
 from app.services.nvidia_service import NvidiaError, generate_book_draft as generate_nvidia_book_draft
 from app.validators import (
-    MAX_URL_LENGTH,
-    is_safe_http_url,
     validate_account_email,
     validate_name,
     validate_password,
 )
+from app.services.book_management_service import validate_book_payload
+from app.services.book_management_service import book_asset_references, cleanup_references
+from app.models.asset_model import Asset
 
 
 def _validate_new_account_payload(data):
@@ -136,54 +141,7 @@ def create_book():
 
 
 def _validate_book_payload(data):
-    """Validate the shared fields used when creating or editing a book."""
-    errors = []
-    title = str(data.get("title", "")).strip()
-    age_group = str(data.get("age_group", "")).strip()
-    reading_level = str(data.get("reading_level", "")).strip().lower()
-    image_urls = data.get("image_urls") or []
-
-    if not title:
-        errors.append("title is required.")
-    elif len(title) > 200:
-        errors.append("title must be 200 characters or fewer.")
-    if not age_group:
-        errors.append("age_group is required.")
-    elif len(age_group) > 50:
-        errors.append("age_group must be 50 characters or fewer.")
-    if reading_level not in {"beginner", "intermediate", "advanced"}:
-        errors.append("reading_level must be beginner, intermediate, or advanced.")
-    if not isinstance(image_urls, list) or len(image_urls) > 8 or any(
-        not isinstance(url, str) or not is_safe_http_url(url)
-        for url in image_urls
-    ):
-        errors.append(
-            f"image_urls must contain up to 8 valid HTTPS URLs (or local HTTP URLs) of "
-            f"{MAX_URL_LENGTH} characters or fewer."
-        )
-
-    url_fields = {
-        "content_url": str(data.get("content_url", "")).strip(),
-        "cover_image_url": str(data.get("cover_image_url", "")).strip(),
-        "video_url": str(data.get("video_url", "")).strip(),
-    }
-    for field_name, value in url_fields.items():
-        if value and not is_safe_http_url(value):
-            errors.append(
-                f"{field_name} must be a valid HTTPS URL (or local HTTP URL) of "
-                f"{MAX_URL_LENGTH} characters or fewer."
-            )
-
-    return errors, {
-        "title": title,
-        "age_group": age_group,
-        "reading_level": reading_level,
-        "text_content": str(data.get("text_content", "")).strip() or None,
-        "content_url": url_fields["content_url"] or None,
-        "cover_image_url": url_fields["cover_image_url"] or None,
-        "video_url": url_fields["video_url"] or None,
-        "image_urls": [url.strip() for url in image_urls] if isinstance(image_urls, list) else [],
-    }
+    return validate_book_payload(data)
 
 
 def update_book(book_id):
@@ -218,9 +176,12 @@ def delete_book(book_id):
     if ReadingSession.query.filter_by(book_id=book_id).first():
         return jsonify({"error": "This book cannot be deleted because it has reading sessions."}), 409
 
+    references = book_asset_references(book.id)
     try:
+        Asset.query.filter_by(book_id=book.id).delete(synchronize_session=False)
         db.session.delete(book)
         db.session.commit()
+        cleanup_references(references)
         return jsonify({"message": "Book deleted successfully."}), 200
     except Exception:
         db.session.rollback()
@@ -400,6 +361,7 @@ def reject_teacher(teacher_id):
 def book_analytics():
     """Return per-book aggregate engagement without child-level data."""
     search = str(request.args.get("search") or "").strip()
+    raw_creator_id = str(request.args.get("creator_id") or "").strip()
     sort = str(request.args.get("sort") or "views").strip().lower()
     if sort not in {"views", "reads", "likes"}:
         return jsonify({"error": "sort must be views, reads, or likes."}), 400
@@ -435,9 +397,23 @@ def book_analytics():
         func.coalesce(likes.c.likes, 0).label("likes"),
     ).outerjoin(views, views.c.book_id == Book.id).outerjoin(
         reads, reads.c.book_id == Book.id
-    ).outerjoin(likes, likes.c.book_id == Book.id)
+    ).outerjoin(likes, likes.c.book_id == Book.id).outerjoin(
+        Parent, Book.created_by_account_id == Parent.id
+    )
     if search:
-        query = query.filter(Book.title.ilike(f"%{search}%"))
+        query = query.filter(or_(
+            Book.title.ilike(f"%{search}%"),
+            Parent.name.ilike(f"%{search}%"),
+            Book.creator_name_snapshot.ilike(f"%{search}%"),
+        ))
+    if raw_creator_id:
+        try:
+            creator_id = int(raw_creator_id)
+        except ValueError:
+            return jsonify({"error": "creator_id must be a positive integer."}), 400
+        if creator_id <= 0:
+            return jsonify({"error": "creator_id must be a positive integer."}), 400
+        query = query.filter(Book.created_by_account_id == creator_id)
     sort_column = {
         "views": func.coalesce(views.c.total_views, 0),
         "reads": func.coalesce(reads.c.total_reads, 0),
@@ -537,6 +513,7 @@ def delete_account(account_id, expected_role=None):
 
     try:
         asset_refs = collect_account_asset_refs(account)
+        remove_account_asset_ledger_rows(account.id)
         db.session.delete(account)
         db.session.commit()
         schedule_account_asset_cleanup(asset_refs)

@@ -3,8 +3,9 @@
 from concurrent.futures import ThreadPoolExecutor
 
 from flask import current_app
+from sqlalchemy import or_
 
-from app.models.asset_model import Asset
+from app.models.asset_model import Asset, BOOK_COVER_IMAGE, BOOK_ILLUSTRATION, BOOK_VIDEO
 from app.services.cloudinary_service import CloudinaryServiceError, delete_asset
 from app.services.elevenlabs_service import delete_voice
 
@@ -13,6 +14,27 @@ ACCOUNT_CLEANUP_EXECUTOR = ThreadPoolExecutor(
     max_workers=2,
     thread_name_prefix="account-asset-cleanup",
 )
+BOOK_MEDIA_CATEGORIES = (BOOK_COVER_IMAGE, BOOK_ILLUSTRATION, BOOK_VIDEO)
+
+
+def remove_account_asset_ledger_rows(account_id):
+    """Delete ledger rows whose external files are removed with an account.
+
+    Authored-book media is retained with a NULL owner so an administrator can
+    still inspect and clean it when the surviving book is later deleted.
+    """
+    deleted = Asset.query.filter(Asset.owner_user_id == account_id).filter(
+        or_(
+            Asset.book_id.is_(None),
+            Asset.asset_category.notin_(BOOK_MEDIA_CATEGORIES),
+        )
+    ).delete(synchronize_session=False)
+    Asset.query.filter(
+        Asset.owner_user_id == account_id,
+        Asset.book_id.isnot(None),
+        Asset.asset_category.in_(BOOK_MEDIA_CATEGORIES),
+    ).update({Asset.owner_user_id: None}, synchronize_session=False)
+    return deleted
 
 
 def collect_account_asset_refs(account):
@@ -24,7 +46,14 @@ def collect_account_asset_refs(account):
             "delivery_type": asset.cloudinary_delivery_type,
         }
         for asset in Asset.query.filter_by(owner_user_id=account.id).all()
+        # Authored books intentionally outlive a deleted teacher. Their media
+        # must therefore remain deliverable even after the ownership FK is
+        # set to NULL and the account-owned ledger rows cascade away.
         if asset.cloudinary_public_id
+        and not (
+            asset.book_id is not None
+            and asset.asset_category in BOOK_MEDIA_CATEGORIES
+        )
     ]
     known_public_ids = {item["public_id"] for item in cloudinary_assets}
 
