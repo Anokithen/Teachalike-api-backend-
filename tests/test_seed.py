@@ -14,6 +14,7 @@ from app.models.child_model import Child
 from app.models.feedback_model import Feedback
 from app.models.parent_model import Parent
 from app.models.reading_session_model import ReadingSession
+from app.models.teacher_profile_model import APPROVAL_APPROVED, TeacherProfile
 from app.models.voice_profile_model import VoiceProfile
 from seed import seed_database
 
@@ -56,6 +57,8 @@ class SeedDataTests(unittest.TestCase):
         self.assertEqual(VoiceProfile.query.count(), 0)
         self.assertEqual(BookNarration.query.count(), 0)
         self.assertEqual(Asset.query.count(), 0)
+        self.assertEqual(TeacherProfile.query.count(), 1)
+        self.assertEqual(TeacherProfile.query.one().approval_status, APPROVAL_APPROVED)
 
         for account in Parent.query.all():
             self.assertIsNone(account.profile_image_url)

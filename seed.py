@@ -26,6 +26,7 @@ from app.models.leaderboard_model import LeaderboardEntry
 from app.models.mini_game_model import MiniGame
 from app.models.parent_model import ROLE_ADMIN, ROLE_PARENT, ROLE_TEACHER, Parent
 from app.models.reading_session_model import ReadingSession
+from app.models.teacher_profile_model import APPROVAL_APPROVED, TeacherProfile
 from app.services.book_games import create_default_mini_games
 from app.utils import utc_now
 
@@ -282,6 +283,15 @@ def seed_database():
             )
             counts["accounts"] += int(created)
         db.session.flush()
+        teacher_account = accounts["teacher"]
+        if teacher_account.teacher_profile is None:
+            db.session.add(
+                TeacherProfile(
+                    account_id=teacher_account.id,
+                    approval_status=APPROVAL_APPROVED,
+                )
+            )
+            db.session.flush()
 
         child_specs = (
             (
