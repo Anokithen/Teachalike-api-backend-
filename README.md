@@ -1,5 +1,98 @@
 # TeachAlike API
 
+## Teacher registration and approval
+
+`POST /api/auth/register` remains backward-compatible with the existing JSON
+parent registration request. Send `account_type: "parent"` explicitly for new
+clients; parent registration returns `201` and the client may continue with its
+existing automatic-login flow. Public registration never accepts `admin`.
+
+Teacher registration uses `multipart/form-data` with `account_type=teacher`,
+`name`, `email`, `password`, `phone_number`, `address`, `teacher_type` (`school`
+or `private_tuition`), the optional matching `school_name`/`tuition_name`, and a
+required `professional_photo`. A valid submission creates the existing
+`parents` account with role `teacher`, a one-to-one `teacher_profiles` row, and
+returns `202` without tokens.
+
+Approval statuses mean:
+
+- `pending`: awaiting an administrator; login and existing JWTs are blocked.
+- `approved`: the teacher can authenticate normally.
+- `rejected`: authentication is blocked; an optional safe rejection reason may
+  be returned to that teacher.
+
+Admins use these authenticated endpoints:
+
+- `GET /api/admin/teachers?status=pending|approved|rejected`
+- `GET /api/admin/teachers/<teacher_id>`
+- `PATCH /api/admin/teachers/<teacher_id>/approve`
+- `PATCH /api/admin/teachers/<teacher_id>/reject` with optional JSON `reason`
+- Existing create, ban, unban, and delete teacher endpoints remain available.
+
+Teacher phone numbers and addresses are emitted only by these admin responses
+and the teacher's own `/api/parents/me` response. They are excluded from the
+ordinary account serializer. Admin-created teachers and legacy teacher accounts
+are approved automatically.
+
+Professional photos use the existing validated upload pipeline (extension,
+MIME, magic bytes, and `MAX_PROFILE_IMAGE_SIZE_MB`). The server derives
+`teachalike/<account_id>/Image/Profile/profile`; clients cannot choose a folder
+or public ID. Cloudinary metadata is written to the `assets` ledger as
+`USER_PROFILE_IMAGE`, while MySQL stores only the URL/public ID and metadata—
+never raw image bytes. Failed database transactions trigger Cloudinary cleanup.
+
+## Book engagement
+
+Engagement uses event records and the existing reading-session source of truth:
+
+- A **view** is an authenticated non-admin opening book details. At most one
+  `book_views` event is stored per account, book, and UTC date.
+- A **unique viewer** is a distinct account with a view event for the book.
+- A **read** is an existing `reading_sessions` row for a child and book.
+- A **completed read** has a non-null `completed_at`; a **unique reader** is a
+  distinct child represented in those sessions.
+- A **like** is one unique `book_likes` row for a book and child.
+
+Authenticated book endpoints:
+
+- `POST /api/books/<book_id>/views` (daily-idempotent; admins return
+  `recorded: false`)
+- `GET /api/books/<book_id>/engagement?child_id=<accessible_child_id>`
+- `PUT /api/books/<book_id>/likes/<child_id>`
+- `DELETE /api/books/<book_id>/likes/<child_id>`
+
+The optional `child_id` is access-checked before `liked_by_child` is returned.
+Like/unlike operations are idempotent and never accept client-provided counts.
+Admins use `GET /api/admin/book-analytics`, with optional `search`, `sort`
+(`views`, `reads`, or `likes`), `page`, and `per_page`. It returns aggregate
+counts only and never exposes individual child activity.
+
+## Teacher and engagement database migration
+
+The new SQLAlchemy models are registered before `db.create_all()`. Railway's
+existing pre-deploy command (`python -m app.database_setup`) creates missing
+tables, backfills teacher accounts without profiles as `approved`, and verifies
+them for `/health/ready`.
+
+For an existing MySQL database managed manually, apply the idempotent migration
+before deploying the new application version:
+
+```bash
+mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p "$DB_NAME" \
+  < migrations/20260801_add_teacher_approval_and_book_engagement.sql
+```
+
+The migration creates `teacher_profiles`, `book_views`, and `book_likes` with
+foreign keys, cascade behavior, indexes, and uniqueness constraints, then
+backfills legacy teachers. It does not reset or delete existing data. No new
+environment variables are required.
+
+Run the complete backend suite without external Cloudinary calls using:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
 ## Demo seed data
 
 After configuring the database, create repeatable local demo data with:
