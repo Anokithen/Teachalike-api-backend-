@@ -1,8 +1,6 @@
 """Authenticated asset upload, query, and deletion workflows."""
 
 import re
-from pathlib import Path
-from uuid import uuid4
 
 from flask import current_app, jsonify, request
 from flask_jwt_extended import current_user
@@ -13,6 +11,7 @@ from app.middleware import can_access_child
 from app.models.asset_model import (
     Asset,
     BOOK_COVER_IMAGE,
+    BOOK_IMAGE,
     BOOK_ILLUSTRATION,
     BOOK_VIDEO,
     CHILD_PROFILE_IMAGE,
@@ -22,6 +21,7 @@ from app.models.asset_model import (
     STATUS_DELETED,
     USER_PROFILE_IMAGE,
     VOICE_PROFILE,
+    TEACHER_BOOK_AUDIO,
 )
 from app.models.book_model import Book
 from app.models.book_narration_model import BookNarration, STATUS_READY
@@ -29,11 +29,12 @@ from app.models.child_model import Child
 from app.models.parent_model import Parent
 from app.models.voice_profile_model import VoiceProfile
 from app.services.cloudinary_path_service import (
-    get_book_video_folder,
+    get_book_images_folder_from_root,
+    get_book_video_folder_from_root,
     get_child_profile_folder,
     get_generated_book_audio_folder,
     get_user_profile_folder,
-    sanitize_folder_segment,
+    get_teacher_book_audio_folder_from_root,
 )
 from app.services.cloudinary_service import (
     CloudinaryServiceError,
@@ -41,9 +42,12 @@ from app.services.cloudinary_service import (
     upload_asset,
     validate_upload_size,
     validate_uploaded_file,
+    stream_authenticated_audio,
 )
 from app.utils import utc_now
 from app.services.elevenlabs_service import delete_voice
+from app.services.book_management_service import ensure_book_asset_root
+from app.models.teacher_profile_model import APPROVAL_APPROVED
 
 SIZE_CONFIG = {
     USER_PROFILE_IMAGE: "MAX_PROFILE_IMAGE_SIZE_MB",
@@ -51,6 +55,8 @@ SIZE_CONFIG = {
     VOICE_PROFILE: "MAX_VOICE_PROFILE_SIZE_MB",
     GENERATED_BOOK_AUDIO: "MAX_BOOK_AUDIO_SIZE_MB",
     BOOK_VIDEO: "MAX_BOOK_VIDEO_SIZE_MB",
+    BOOK_IMAGE: "MAX_PROFILE_IMAGE_SIZE_MB",
+    TEACHER_BOOK_AUDIO: "MAX_BOOK_AUDIO_SIZE_MB",
 }
 LANGUAGE_PATTERN = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$")
 
@@ -413,42 +419,244 @@ def upload_book_narration(book_id):
         return _error("Narration metadata could not be saved.", 500)
 
 
-def upload_book_video(book_id):
-    """Store an administrator-owned video for an existing book."""
+def _can_manage_catalog_book(book):
+    if current_user.is_admin:
+        return True
+    return (
+        current_user.is_teacher
+        and not current_user.is_banned
+        and current_user.teacher_profile is not None
+        and current_user.teacher_profile.approval_status == APPROVAL_APPROVED
+        and book.created_by_account_id == current_user.id
+    )
+
+
+def _book_asset_owner_id(book):
+    return book.created_by_account_id or current_user.id
+
+
+def _retire_asset(asset):
+    asset.status = STATUS_DELETED
+    asset.deleted_at = utc_now()
+    asset.active_slot = None
+
+
+def _cleanup_replaced_asset(existing, metadata):
+    if not existing or existing.cloudinary_public_id == metadata["public_id"]:
+        return
+    try:
+        delete_asset(
+            existing.cloudinary_public_id,
+            existing.cloudinary_resource_type,
+            existing.cloudinary_delivery_type,
+        )
+    except CloudinaryServiceError:
+        existing.status = STATUS_CLEANUP_FAILED
+        try:
+            db.session.commit()
+        except SQLAlchemyError:
+            db.session.rollback()
+
+
+def upload_book_image(book_id):
     book = db.session.get(Book, book_id)
     if book is None:
         return _error("Book not found.", 404)
+    if not _can_manage_catalog_book(book):
+        return _error("You cannot manage this book.", 403)
+    upload, error = _validated_file(BOOK_IMAGE, "image")
+    if error:
+        return error
+    kind = str(request.form.get("image_kind") or "").strip().lower()
+    if kind not in {"cover", "picture"}:
+        return _error("image_kind must be cover or picture.", 400)
+    if kind == "picture":
+        try:
+            position = int(request.form.get("position"))
+        except (TypeError, ValueError):
+            return _error("position must be an integer from 1 to 8.", 400)
+        if position < 1 or position > 8:
+            return _error("position must be an integer from 1 to 8.", 400)
+        if position > len(book.image_urls or []) + 1:
+            return _error("Story pictures must be uploaded in order.", 409)
+        public_name = f"picture_{position:02d}"
+        slot = f"book:{book.id}:picture:{position:02d}"
+    else:
+        position = None
+        public_name = "cover"
+        slot = f"book:{book.id}:cover"
+    existing = Asset.query.filter_by(active_slot=slot, deleted_at=None).first()
+    root = ensure_book_asset_root(book)
+    folder = get_book_images_folder_from_root(root)
+    metadata = None
+    try:
+        metadata = upload_asset(
+            upload, folder, resource_type="image",
+            public_id=f"{folder}/{public_name}", overwrite=existing is not None,
+            tags=[BOOK_IMAGE.lower(), f"book_{book.id}"],
+            context={"book_id": str(book.id)},
+        )
+        if existing:
+            _retire_asset(existing)
+        asset = _new_asset(
+            metadata, BOOK_IMAGE, _book_asset_owner_id(book), book_id=book.id,
+            admin_id=current_user.id if current_user.is_admin else None,
+            active_slot=slot,
+        )
+        db.session.add(asset)
+        if kind == "cover":
+            book.cover_image_url = metadata["secure_url"]
+        else:
+            urls = list(book.image_urls or [])
+            if position == len(urls) + 1:
+                urls.append(metadata["secure_url"])
+            else:
+                urls[position - 1] = metadata["secure_url"]
+            book.image_urls = urls
+        db.session.commit()
+        _cleanup_replaced_asset(existing, metadata)
+        return _response("Book image uploaded.", asset.to_dict(), 201)
+    except CloudinaryServiceError:
+        db.session.rollback()
+        return _error("Book image upload failed.", 503)
+    except SQLAlchemyError:
+        db.session.rollback()
+        if metadata and not (
+            existing and existing.cloudinary_public_id == metadata["public_id"]
+        ):
+            _cleanup_upload(metadata)
+        return _error("Book image metadata could not be saved.", 500)
+
+
+def upload_book_video(book_id):
+    """Store or replace a catalog book's first video."""
+    book = db.session.get(Book, book_id)
+    if book is None:
+        return _error("Book not found.", 404)
+    if not _can_manage_catalog_book(book):
+        return _error("You cannot manage this book.", 403)
     upload, error = _validated_file(BOOK_VIDEO, "video")
     if error:
         return error
     metadata = None
+    slot = f"book:{book.id}:video:01"
+    existing = Asset.query.filter_by(active_slot=slot, deleted_at=None).first()
     try:
-        filename = sanitize_folder_segment(Path(upload.filename).stem)
+        root = ensure_book_asset_root(book)
+        folder = get_book_video_folder_from_root(root)
         metadata = upload_asset(
             upload,
-            get_book_video_folder(current_user.id, current_user.id, book.id, book.title),
+            folder,
             resource_type="video",
-            public_id=f"{filename}_{uuid4().hex}",
-            overwrite=False,
+            public_id=f"{folder}/video_01",
+            overwrite=existing is not None,
         )
+        if existing:
+            _retire_asset(existing)
         asset = _new_asset(
             metadata,
             BOOK_VIDEO,
-            current_user.id,
-            admin_id=current_user.id,
+            _book_asset_owner_id(book),
+            admin_id=current_user.id if current_user.is_admin else None,
             book_id=book.id,
+            active_slot=slot,
         )
         db.session.add(asset)
         book.video_url = metadata["secure_url"]
         db.session.commit()
+        _cleanup_replaced_asset(existing, metadata)
         return _response("Book video uploaded.", asset.to_dict(), 201)
     except CloudinaryServiceError:
+        db.session.rollback()
         return _error("Book video upload failed.", 503)
     except SQLAlchemyError:
         db.session.rollback()
-        if metadata:
+        if metadata and not (
+            existing and existing.cloudinary_public_id == metadata["public_id"]
+        ):
             _cleanup_upload(metadata)
         return _error("Book video metadata could not be saved.", 500)
+
+
+def upload_teacher_book_audio(book_id):
+    book = db.session.get(Book, book_id)
+    if book is None:
+        return _error("Book not found.", 404)
+    if not _can_manage_catalog_book(book):
+        return _error("You cannot manage this book.", 403)
+    upload, error = _validated_file(TEACHER_BOOK_AUDIO, "audio")
+    if error:
+        return error
+    slot = f"book:{book.id}:teacher_audio"
+    existing = Asset.query.filter_by(active_slot=slot, deleted_at=None).first()
+    metadata = None
+    try:
+        root = ensure_book_asset_root(book)
+        folder = get_teacher_book_audio_folder_from_root(root)
+        metadata = upload_asset(
+            upload, folder, resource_type="video",
+            public_id=f"{folder}/voice_audio_teacher",
+            overwrite=existing is not None, delivery_type="authenticated",
+            tags=[TEACHER_BOOK_AUDIO.lower(), f"book_{book.id}"],
+            context={"book_id": str(book.id)},
+        )
+        if existing:
+            _retire_asset(existing)
+        asset = _new_asset(
+            metadata, TEACHER_BOOK_AUDIO, _book_asset_owner_id(book),
+            book_id=book.id,
+            admin_id=current_user.id if current_user.is_admin else None,
+            active_slot=slot,
+        )
+        db.session.add(asset)
+        db.session.commit()
+        _cleanup_replaced_asset(existing, metadata)
+        return _response("Teacher narration uploaded.", asset.to_dict(), 201)
+    except CloudinaryServiceError:
+        db.session.rollback()
+        return _error("Teacher narration upload failed.", 503)
+    except SQLAlchemyError:
+        db.session.rollback()
+        if metadata and not (
+            existing and existing.cloudinary_public_id == metadata["public_id"]
+        ):
+            _cleanup_upload(metadata)
+        return _error("Teacher narration metadata could not be saved.", 500)
+
+
+def get_teacher_book_audio(book_id):
+    if db.session.get(Book, book_id) is None:
+        return _error("Book not found.", 404)
+    asset = Asset.query.filter_by(
+        book_id=book_id, asset_category=TEACHER_BOOK_AUDIO,
+        active_slot=f"book:{book_id}:teacher_audio", deleted_at=None,
+    ).first()
+    if asset is None:
+        return _error("This book has no teacher narration.", 404)
+    try:
+        return stream_authenticated_audio(
+            asset.cloudinary_public_id,
+            asset.cloudinary_secure_url,
+            current_app.config,
+            request.headers.get("Range"),
+        )
+    except CloudinaryServiceError:
+        return _error("Teacher narration playback is temporarily unavailable.", 503)
+
+
+def delete_teacher_book_audio(book_id):
+    book = db.session.get(Book, book_id)
+    if book is None:
+        return _error("Book not found.", 404)
+    if not _can_manage_catalog_book(book):
+        return _error("You cannot manage this book.", 403)
+    asset = Asset.query.filter_by(
+        book_id=book.id, asset_category=TEACHER_BOOK_AUDIO,
+        active_slot=f"book:{book.id}:teacher_audio", deleted_at=None,
+    ).first()
+    if asset is None:
+        return _response("Teacher narration was already removed.")
+    return delete_stored_asset(asset.id)
 
 
 def _can_manage_asset(asset):
@@ -504,6 +712,26 @@ def delete_stored_asset(asset_id):
             return _error("This voice profile is still used by narrations.", 422)
         if profile and profile.reading_sessions:
             return _error("This voice profile is still used by reading sessions.", 422)
+    asset_slot = asset.active_slot
+    if (
+        asset.asset_category == BOOK_IMAGE
+        and asset.book_id
+        and asset_slot
+        and ":picture:" in asset_slot
+    ):
+        try:
+            position = int(asset_slot.rsplit(":", 1)[-1])
+        except ValueError:
+            position = 0
+        higher_picture = Asset.query.filter(
+            Asset.book_id == asset.book_id,
+            Asset.asset_category == BOOK_IMAGE,
+            Asset.deleted_at.is_(None),
+            Asset.active_slot.isnot(None),
+            Asset.active_slot > f"book:{asset.book_id}:picture:{position:02d}",
+        ).first()
+        if higher_picture:
+            return _error("Delete later story pictures first to preserve their order.", 409)
     try:
         delete_asset(
             asset.cloudinary_public_id,
@@ -554,6 +782,16 @@ def delete_stored_asset(asset_id):
         elif asset.asset_category == BOOK_ILLUSTRATION and asset.book_id:
             book = db.session.get(Book, asset.book_id)
             if book:
+                book.image_urls = [
+                    url for url in (book.image_urls or [])
+                    if url != asset.cloudinary_secure_url
+                ]
+        elif asset.asset_category == BOOK_IMAGE and asset.book_id:
+            book = db.session.get(Book, asset.book_id)
+            if book and asset_slot == f"book:{book.id}:cover":
+                if book.cover_image_url == asset.cloudinary_secure_url:
+                    book.cover_image_url = None
+            elif book and asset_slot and ":picture:" in asset_slot:
                 book.image_urls = [
                     url for url in (book.image_urls or [])
                     if url != asset.cloudinary_secure_url

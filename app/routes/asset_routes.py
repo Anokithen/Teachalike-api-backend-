@@ -38,6 +38,42 @@ def upload_book_video(book_id):
     return ctrl.upload_book_video(book_id)
 
 
+@asset_bp.post("/api/admin/books/<int:book_id>/images")
+@admin_required
+def upload_admin_book_image(book_id):
+    return ctrl.upload_book_image(book_id)
+
+
+@asset_bp.post("/api/books/<int:book_id>/images")
+@role_required("teacher", "admin")
+def upload_book_image(book_id):
+    return ctrl.upload_book_image(book_id)
+
+
+@asset_bp.post("/api/books/<int:book_id>/video")
+@role_required("teacher", "admin")
+def upload_catalog_book_video(book_id):
+    return ctrl.upload_book_video(book_id)
+
+
+@asset_bp.post("/api/books/<int:book_id>/teacher-audio")
+@role_required("teacher", "admin")
+def upload_teacher_book_audio(book_id):
+    return ctrl.upload_teacher_book_audio(book_id)
+
+
+@asset_bp.get("/api/books/<int:book_id>/teacher-audio")
+@role_required("parent", "teacher", "admin")
+def get_teacher_book_audio(book_id):
+    return ctrl.get_teacher_book_audio(book_id)
+
+
+@asset_bp.delete("/api/books/<int:book_id>/teacher-audio")
+@role_required("teacher", "admin")
+def delete_teacher_book_audio(book_id):
+    return ctrl.delete_teacher_book_audio(book_id)
+
+
 @asset_bp.delete("/api/assets/<int:asset_id>")
 @role_required("parent", "teacher", "admin")
 def delete_asset(asset_id):
