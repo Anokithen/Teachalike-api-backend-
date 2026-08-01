@@ -47,7 +47,7 @@ from app.services.cloudinary_service import (
 from app.utils import utc_now
 from app.services.elevenlabs_service import delete_voice
 from app.services.book_management_service import ensure_book_asset_root
-from app.models.teacher_profile_model import APPROVAL_APPROVED
+from app.models.teacher_application_model import APPROVAL_APPROVED
 
 SIZE_CONFIG = {
     USER_PROFILE_IMAGE: "MAX_PROFILE_IMAGE_SIZE_MB",
@@ -425,8 +425,8 @@ def _can_manage_catalog_book(book):
     return (
         current_user.is_teacher
         and not current_user.is_banned
-        and current_user.teacher_profile is not None
-        and current_user.teacher_profile.approval_status == APPROVAL_APPROVED
+        and current_user.teacher_application is not None
+        and current_user.teacher_application.approval_status == APPROVAL_APPROVED
         and book.created_by_account_id == current_user.id
     )
 
