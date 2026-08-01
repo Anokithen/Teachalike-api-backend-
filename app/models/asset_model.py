@@ -91,6 +91,8 @@ class Asset(db.Model):
         **relations,
     ):
         """Build an asset row from normalized storage-service metadata."""
+        if category not in ASSET_CATEGORIES:
+            raise ValueError("Unsupported asset category.")
         return cls(
             owner_user_id=owner_user_id,
             asset_category=category,

@@ -1,5 +1,6 @@
 """Authenticated asset upload, query, and deletion workflows."""
 
+import re
 from pathlib import Path
 from uuid import uuid4
 
@@ -49,6 +50,7 @@ SIZE_CONFIG = {
     GENERATED_BOOK_AUDIO: "MAX_BOOK_AUDIO_SIZE_MB",
     BOOK_VIDEO: "MAX_BOOK_VIDEO_SIZE_MB",
 }
+LANGUAGE_PATTERN = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$")
 
 
 def _response(message, data=None, status=200):
@@ -80,6 +82,16 @@ def _validated_file(category, media_type):
         return None, _error(f"The file exceeds the {limit_mb} MB limit.", 413)
     upload.stream.seek(0)
     return upload, None
+
+
+def _validated_optional_language():
+    """Validate an optional BCP-47-style narration language tag."""
+    language = str(request.form.get("language") or "").strip()
+    if not language:
+        return None, None
+    if len(language) > 35 or not LANGUAGE_PATTERN.fullmatch(language):
+        return None, _error("language must be a valid language tag.", 422)
+    return language, None
 
 
 def _new_asset(metadata, category, owner_id, **relations):
@@ -153,7 +165,7 @@ def _save_profile(upload, category, folder, owner_id, child=None):
         db.session.commit()
     except SQLAlchemyError:
         db.session.rollback()
-        if existing:
+        if existing and existing.cloudinary_public_id == metadata["public_id"]:
             # A deterministic Cloudinary overwrite has already replaced the
             # old bytes. Deleting it here would leave both the old DB row and
             # related profile with no deliverable asset. Keep the confirmed
@@ -163,6 +175,9 @@ def _save_profile(upload, category, folder, owner_id, child=None):
                 metadata.get("asset_id"),
             )
         else:
+            # A renamed child's canonical folder creates a different public
+            # ID. The previous image remains intact, so this new orphan can be
+            # removed safely when its metadata transaction fails.
             _cleanup_upload(metadata)
         raise
     if existing and existing.cloudinary_public_id != metadata["public_id"]:
@@ -349,8 +364,14 @@ def upload_book_narration(book_id):
     upload, error = _validated_file(GENERATED_BOOK_AUDIO, "audio")
     if error:
         return error
+    language, error = _validated_optional_language()
+    if error:
+        return error
     narration = BookNarration(
-        book_id=book.id, voice_profile_id=profile.id, status=STATUS_READY
+        book_id=book.id,
+        voice_profile_id=profile.id,
+        status=STATUS_READY,
+        language=language,
     )
     metadata = None
     try:

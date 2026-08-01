@@ -17,6 +17,23 @@ PREPARE drop_narration_unique_stmt FROM @drop_narration_unique;
 EXECUTE drop_narration_unique_stmt;
 DEALLOCATE PREPARE drop_narration_unique_stmt;
 
+-- Preserve the narration language selected by the configured synthesis
+-- provider (or supplied with a completed narration upload) when available.
+SET @add_narration_language = IF(
+    EXISTS(
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = DATABASE()
+          AND table_name = 'book_narrations'
+          AND column_name = 'language'
+    ),
+    'SELECT 1',
+    'ALTER TABLE book_narrations ADD COLUMN language VARCHAR(35) NULL'
+);
+PREPARE add_narration_language_stmt FROM @add_narration_language;
+EXECUTE add_narration_language_stmt;
+DEALLOCATE PREPARE add_narration_language_stmt;
+
 CREATE TABLE IF NOT EXISTS assets (
     id INTEGER NOT NULL AUTO_INCREMENT,
     owner_user_id INTEGER NOT NULL,

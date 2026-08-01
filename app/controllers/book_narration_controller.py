@@ -190,6 +190,12 @@ def create_book_narration(book_id):
             book_id=book.id,
             voice_profile_id=profile.id,
             status=STATUS_PROCESSING,
+            language=(
+                str(
+                    current_app.config.get("ELEVENLABS_LANGUAGE_CODE") or ""
+                ).strip()[:35]
+                or None
+            ),
         )
         db.session.add(narration)
         db.session.flush()

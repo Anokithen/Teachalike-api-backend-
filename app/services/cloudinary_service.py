@@ -8,7 +8,7 @@ from flask import Response, current_app, has_app_context, stream_with_context
 from app.services.cloudinary_path_service import (
     get_child_profile_folder,
     get_generated_book_audio_folder,
-    get_user_root_folder,
+    get_staged_book_media_folder,
     get_user_profile_folder,
     get_voice_profile_folder,
     sanitize_folder_segment,
@@ -174,7 +174,7 @@ def _cloudinary_modules():
         import cloudinary.uploader
         import cloudinary.utils
     except ImportError as exc:
-        raise RuntimeError(
+        raise CloudinaryServiceError(
             "Cloudinary support is not installed. Install the cloudinary package."
         ) from exc
     return cloudinary
@@ -182,7 +182,6 @@ def _cloudinary_modules():
 
 def configure_cloudinary(config):
     """Configure the SDK or raise a sanitized configuration error."""
-    cloudinary = _cloudinary_modules()
     values = {
         "cloud_name": config.get("CLOUDINARY_CLOUD_NAME"),
         "api_key": config.get("CLOUDINARY_API_KEY"),
@@ -193,6 +192,7 @@ def configure_cloudinary(config):
             "Cloudinary is not configured. Set CLOUDINARY_CLOUD_NAME, "
             "CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET on the API server."
         )
+    cloudinary = _cloudinary_modules()
     cloudinary.config(**values, secure=True)
     return cloudinary
 
@@ -231,6 +231,45 @@ def upload_asset(
     audio. Keeping the SDK call here also ensures provider errors never leak
     credentials or implementation details through an HTTP response.
     """
+    asset_folder = str(asset_folder or "").strip().strip("/")
+    if (
+        not asset_folder
+        or "\\" in asset_folder
+        or any(part in {"", ".", ".."} for part in asset_folder.split("/"))
+    ):
+        raise CloudinaryServiceError(
+            "A valid server-derived asset folder is required."
+        )
+    if resource_type not in {"auto", "image", "video", "raw"}:
+        raise CloudinaryServiceError("Unsupported Cloudinary resource type.")
+    if delivery_type not in {"upload", "authenticated", "private"}:
+        raise CloudinaryServiceError("Unsupported Cloudinary delivery type.")
+    if public_id is not None:
+        public_id = str(public_id).strip().strip("/")
+        if (
+            not public_id
+            or "\\" in public_id
+            or any(part in {"", ".", ".."} for part in public_id.split("/"))
+        ):
+            raise CloudinaryServiceError(
+                "A valid server-derived public ID is required."
+            )
+
+    reserved_options = {
+        "asset_folder",
+        "folder",
+        "resource_type",
+        "type",
+        "public_id",
+        "overwrite",
+        "invalidate",
+        "timeout",
+    }
+    attempted_overrides = reserved_options.intersection(upload_options)
+    if attempted_overrides:
+        raise CloudinaryServiceError(
+            "Reserved Cloudinary upload options cannot be overridden."
+        )
     try:
         operation_config = _operation_config(config)
         cloudinary = configure_cloudinary(operation_config)
@@ -260,7 +299,7 @@ def upload_asset(
         raise CloudinaryUploadError("Cloudinary upload failed.") from exc
 
     metadata = {
-        "asset_id": result.get("asset_id") or result.get("public_id"),
+        "asset_id": result.get("asset_id"),
         "public_id": result.get("public_id"),
         "secure_url": result.get("secure_url"),
         "resource_type": result.get("resource_type") or resource_type,
@@ -270,10 +309,25 @@ def upload_asset(
         "width": result.get("width"),
         "height": result.get("height"),
         "duration": result.get("duration"),
-        "asset_folder": result.get("asset_folder") or asset_folder,
-        "original_filename": result.get("original_filename") or getattr(file, "filename", None),
+        "asset_folder": asset_folder,
+        "original_filename": getattr(file, "filename", None)
+        or result.get("original_filename"),
     }
-    if not metadata["public_id"] or not metadata["secure_url"]:
+    if not all(
+        metadata[field] for field in ("asset_id", "public_id", "secure_url")
+    ):
+        if not overwrite and metadata["public_id"]:
+            try:
+                cloudinary.uploader.destroy(
+                    metadata["public_id"],
+                    resource_type=metadata["resource_type"],
+                    type=metadata["delivery_type"],
+                    invalidate=True,
+                )
+            except Exception:
+                _log_storage_failure(
+                    "incomplete-upload cleanup", metadata["public_id"]
+                )
         raise CloudinaryUploadError("Cloudinary upload returned incomplete metadata.")
     return metadata
 
@@ -313,7 +367,11 @@ def delete_asset(
         _log_storage_failure("deletion", public_id)
         raise CloudinaryServiceError("Cloudinary deletion failed.") from exc
     status = result.get("result") if isinstance(result, dict) else result
-    return {"result": status or "unknown", "public_id": public_id}
+    status = str(status or "unknown").lower()
+    if status not in {"ok", "not found"}:
+        _log_storage_failure("unconfirmed deletion", public_id)
+        raise CloudinaryServiceError("Cloudinary deletion could not be confirmed.")
+    return {"result": status, "public_id": public_id}
 
 
 def get_asset_metadata(
@@ -336,7 +394,7 @@ def get_asset_metadata(
         _log_storage_failure("metadata lookup", public_id)
         raise CloudinaryServiceError("Cloudinary metadata lookup failed.") from exc
     return {
-        "asset_id": result.get("asset_id") or result.get("public_id"),
+        "asset_id": result.get("asset_id"),
         "public_id": result.get("public_id"),
         "secure_url": result.get("secure_url"),
         "resource_type": result.get("resource_type") or resource_type,
@@ -532,7 +590,7 @@ def stream_authenticated_audio(
 def upload_book_media(file, media_type, owner_id, config):
     """Compatibility wrapper for the legacy pre-book catalog image uploader."""
     extension = validate_uploaded_file(file, media_type)
-    folder = f"{get_user_root_folder(owner_id)}/Image/Book_media"
+    folder = get_staged_book_media_folder(owner_id)
     stem = sanitize_folder_segment(
         str(getattr(file, "filename", "")).rsplit(".", 1)[0]
     )

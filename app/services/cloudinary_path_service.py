@@ -60,3 +60,13 @@ def get_book_video_folder(user_id, admin_id, book_id, book_name) -> str:
     """Return an administrator's video folder for a catalog book."""
     book = f"{int(book_id)}_{sanitize_folder_segment(book_name)}"
     return f"{get_user_root_folder(user_id)}/Video/{int(admin_id)}/{book}"
+
+
+def get_staged_book_media_folder(user_id) -> str:
+    """Return the compatibility folder for images uploaded before book creation.
+
+    The legacy admin book builder uploads covers and illustrations before a
+    database book ID exists. Keeping this exceptional path here ensures that
+    controllers and Cloudinary wrappers still share one path authority.
+    """
+    return f"{get_user_root_folder(user_id)}/Image/Book_media"

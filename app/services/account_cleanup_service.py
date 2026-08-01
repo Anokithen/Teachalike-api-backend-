@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from flask import current_app
 
 from app.models.asset_model import Asset
-from app.services.cloudinary_service import delete_asset
+from app.services.cloudinary_service import CloudinaryServiceError, delete_asset
 from app.services.elevenlabs_service import delete_voice
 
 
@@ -74,12 +74,20 @@ def delete_account_asset_refs(asset_refs, config, logger):
                 reference.get("delivery_type") or "upload",
                 config=config,
             )
-        except Exception as exc:
-            logger.exception(
+        except CloudinaryServiceError:
+            # The service records operation context without exposing its SDK
+            # exception chain. Keep account-cleanup logs sanitized as well.
+            logger.error(
                 "Could not delete account Cloudinary asset public_id=%s",
                 public_id,
             )
-            failures.append(exc)
+            failures.append(CloudinaryServiceError("Cloudinary cleanup failed."))
+        except Exception:
+            logger.error(
+                "Unexpected account Cloudinary cleanup failure for public_id=%s",
+                public_id,
+            )
+            failures.append(RuntimeError("Unexpected Cloudinary cleanup failure."))
 
     def delete_elevenlabs(voice_id, label):
         if not voice_id or voice_id in seen_elevenlabs_ids:

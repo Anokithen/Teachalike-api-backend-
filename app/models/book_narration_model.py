@@ -22,6 +22,7 @@ class BookNarration(db.Model):
     status = db.Column(db.String(20), nullable=False, default=STATUS_PROCESSING)
     narration_audio_url = db.Column(db.String(500), nullable=True)
     cloudinary_public_id = db.Column(db.String(255), nullable=True, unique=True)
+    language = db.Column(db.String(35), nullable=True)
     error_message = db.Column(db.String(500), nullable=True)
     created_at = db.Column(db.DateTime, default=utc_now)
 
@@ -30,6 +31,7 @@ class BookNarration(db.Model):
             "id": self.id,
             "book_id": self.book_id,
             "voice_profile_id": self.voice_profile_id,
+            "language": self.language,
             "status": self.status,
             "created_at": utc_isoformat(self.created_at),
             "error_message": self.error_message if self.status == STATUS_FAILED else None,

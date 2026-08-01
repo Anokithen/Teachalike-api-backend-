@@ -290,26 +290,36 @@ def _ensure_book_schema():
 
 
 def _ensure_book_narration_schema():
-    """Remove the retired one-narration-per-book/voice constraint."""
+    """Upgrade narration metadata and remove the retired cache constraint."""
     inspector = inspect(db.engine)
     if not inspector.has_table("book_narrations"):
         return
+    columns = {
+        column["name"] for column in inspector.get_columns("book_narrations")
+    }
+    changed = False
+    if "language" not in columns:
+        db.session.execute(
+            text("ALTER TABLE book_narrations ADD COLUMN language VARCHAR(35) NULL")
+        )
+        changed = True
     unique_constraints = {
         constraint["name"]
         for constraint in inspector.get_unique_constraints("book_narrations")
         if constraint.get("name")
     }
-    if "uq_book_voice_narration" not in unique_constraints:
-        return
-    if db.engine.dialect.name != "mysql":
-        raise RuntimeError(
-            "The legacy uq_book_voice_narration constraint must be removed "
-            "before startup."
+    if "uq_book_voice_narration" in unique_constraints:
+        if db.engine.dialect.name != "mysql":
+            raise RuntimeError(
+                "The legacy uq_book_voice_narration constraint must be removed "
+                "before startup."
+            )
+        db.session.execute(
+            text("ALTER TABLE book_narrations DROP INDEX uq_book_voice_narration")
         )
-    db.session.execute(
-        text("ALTER TABLE book_narrations DROP INDEX uq_book_voice_narration")
-    )
-    db.session.commit()
+        changed = True
+    if changed:
+        db.session.commit()
 
 
 def _ensure_profile_image_schema():
