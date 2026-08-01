@@ -102,8 +102,8 @@ def create_app(*, initialize_database=None):
                 return True
             if (
                 parent.is_teacher
-                and parent.teacher_profile is not None
-                and parent.teacher_profile.approval_status != "approved"
+                and parent.teacher_application is not None
+                and parent.teacher_application.approval_status != "approved"
             ):
                 return True
         return False
@@ -117,8 +117,8 @@ def create_app(*, initialize_database=None):
             return jsonify({
                 "error": "This account has been banned. Contact an administrator.",
             }), 403
-        if account and account.is_teacher and account.teacher_profile is not None:
-            profile = account.teacher_profile
+        if account and account.is_teacher and account.teacher_application is not None:
+            profile = account.teacher_application
             if profile.approval_status == "pending":
                 return jsonify({
                     "error": "Your teacher account is waiting for administrator approval.",
@@ -239,14 +239,16 @@ def _initialize_database_schema(app):
         stage = "database connection"
         try:
             db.session.execute(text("SELECT 1"))
+            stage = "teacher application table migration"
+            _prepare_teacher_application_table()
             stage = "model table creation"
             db.create_all()
             stage = "voice profile schema compatibility"
             _ensure_voice_profile_schema()
             stage = "profile image schema compatibility"
             _ensure_profile_image_schema()
-            stage = "teacher profile compatibility and backfill"
-            _ensure_teacher_profile_schema()
+            stage = "teacher application compatibility and backfill"
+            _ensure_teacher_application_schema()
             stage = "book schema compatibility"
             _ensure_book_schema()
             stage = "book asset ownership compatibility"
@@ -466,18 +468,61 @@ def _ensure_profile_image_schema():
     db.session.commit()
 
 
-def _ensure_teacher_profile_schema():
-    """Keep legacy teachers active by giving them approved profile rows."""
+def _prepare_teacher_application_table():
+    """Rename and preserve the former teacher_profiles table before create_all."""
     inspector = inspect(db.engine)
-    if not inspector.has_table("teacher_profiles"):
+    tables = set(inspector.get_table_names())
+    has_legacy = "teacher_profiles" in tables
+    has_applications = "teacher_applications" in tables
+    if not has_legacy:
+        return
+
+    if not has_applications:
+        statement = (
+            "RENAME TABLE teacher_profiles TO teacher_applications"
+            if db.engine.dialect.name == "mysql"
+            else "ALTER TABLE teacher_profiles RENAME TO teacher_applications"
+        )
+        db.session.execute(text(statement))
+        db.session.commit()
+        return
+
+    # A previously interrupted deployment may have created the new table
+    # before moving the old rows. Copy only accounts not already represented;
+    # the legacy table remains untouched so this recovery path cannot lose data.
+    db.session.execute(text(
+        "INSERT INTO teacher_applications "
+        "(account_id, phone_number, address, teacher_type, school_name, "
+        "tuition_name, approval_status, reviewed_by_id, reviewed_at, "
+        "rejection_reason, created_at, updated_at) "
+        "SELECT old.account_id, old.phone_number, old.address, old.teacher_type, "
+        "old.school_name, old.tuition_name, old.approval_status, "
+        "old.reviewed_by_id, old.reviewed_at, old.rejection_reason, "
+        "old.created_at, old.updated_at FROM teacher_profiles old "
+        "WHERE NOT EXISTS (SELECT 1 FROM teacher_applications current "
+        "WHERE current.account_id = old.account_id)"
+    ))
+    db.session.commit()
+
+
+def _ensure_teacher_application_schema():
+    """Backfill approved application rows for legacy teacher accounts."""
+    inspector = inspect(db.engine)
+    if not inspector.has_table("teacher_applications"):
         return
     db.session.execute(
         text(
-            "INSERT INTO teacher_profiles "
+            "INSERT INTO teacher_applications "
             "(account_id, approval_status, created_at, updated_at) "
             "SELECT p.id, 'approved', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP "
-            "FROM parents p LEFT JOIN teacher_profiles tp ON tp.account_id = p.id "
-            "WHERE p.role = 'teacher' AND tp.id IS NULL"
+            "FROM parents p LEFT JOIN teacher_applications ta ON ta.account_id = p.id "
+            "WHERE p.role = 'teacher' AND ta.id IS NULL"
         )
     )
     db.session.commit()
+
+
+def _ensure_teacher_profile_schema():
+    """Compatibility wrapper for older deployment helpers and tests."""
+    _prepare_teacher_application_table()
+    _ensure_teacher_application_schema()
