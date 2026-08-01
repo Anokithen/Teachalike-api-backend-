@@ -32,6 +32,7 @@ from app.services.cloudinary_path_service import (
     get_book_video_folder,
     get_child_profile_folder,
     get_generated_book_audio_folder,
+    get_staged_book_media_folder,
     get_user_profile_folder,
     get_voice_profile_folder,
     sanitize_folder_segment,
@@ -89,6 +90,10 @@ class PathServiceTests(unittest.TestCase):
         self.assertEqual(
             get_book_video_folder(7, 2, 9, "A Book"),
             "teachalike/7/Video/2/9_a_book",
+        )
+        self.assertEqual(
+            get_staged_book_media_folder(7),
+            "teachalike/7/Image/Book_media",
         )
 
     def test_sanitization_blocks_traversal_and_caps_length(self):
@@ -261,6 +266,86 @@ class CloudinaryServiceTests(unittest.TestCase):
         self.assertEqual(metadata["asset_id"], "asset")
         self.assertEqual(metadata["secure_url"], "https://res.cloudinary.test/file.mp4")
         self.assertNotIn("url", metadata)
+
+    def test_reserved_storage_identity_options_cannot_be_overridden(self):
+        with self.assertRaisesRegex(
+            CloudinaryServiceError,
+            "Reserved Cloudinary upload options",
+        ):
+            upload_asset(
+                io.BytesIO(PNG),
+                "teachalike/1/Image/Profile",
+                resource_type="image",
+                config={},
+                folder="client/path",
+            )
+
+    @patch("app.services.cloudinary_service._cloudinary_modules")
+    def test_unconfirmed_delete_result_is_rejected(self, modules):
+        uploader = MagicMock()
+        uploader.destroy.return_value = {"result": "pending"}
+        modules.return_value = SimpleNamespace(config=MagicMock(), uploader=uploader)
+        with self.assertRaisesRegex(
+            CloudinaryServiceError,
+            "could not be confirmed",
+        ):
+            delete_asset(
+                "teachalike/1/Image/Profile/profile",
+                "image",
+                config={
+                    "CLOUDINARY_CLOUD_NAME": "test",
+                    "CLOUDINARY_API_KEY": "test",
+                    "CLOUDINARY_API_SECRET": "test",
+                },
+            )
+
+    @patch("app.services.cloudinary_service._cloudinary_modules")
+    def test_incomplete_upload_metadata_is_cleaned_up(self, modules):
+        from app.services.cloudinary_service import CloudinaryUploadError
+
+        uploader = MagicMock()
+        uploader.upload.return_value = {
+            "public_id": "teachalike/1/Image/Profile/profile",
+            "secure_url": "https://res.cloudinary.test/profile.png",
+            "resource_type": "image",
+            "type": "upload",
+            "asset_folder": "unexpected/provider/folder",
+        }
+        uploader.destroy.return_value = {"result": "ok"}
+        modules.return_value = SimpleNamespace(config=MagicMock(), uploader=uploader)
+        with self.assertRaisesRegex(CloudinaryUploadError, "incomplete metadata"):
+            upload_asset(
+                io.BytesIO(PNG),
+                "teachalike/1/Image/Profile",
+                resource_type="image",
+                config={
+                    "CLOUDINARY_CLOUD_NAME": "test",
+                    "CLOUDINARY_API_KEY": "test",
+                    "CLOUDINARY_API_SECRET": "test",
+                },
+            )
+        uploader.destroy.assert_called_once_with(
+            "teachalike/1/Image/Profile/profile",
+            resource_type="image",
+            type="upload",
+            invalidate=True,
+        )
+
+    def test_asset_model_rejects_unknown_category(self):
+        metadata = {
+            "asset_id": "asset",
+            "public_id": "public",
+            "secure_url": "https://res.cloudinary.test/file",
+            "resource_type": "raw",
+            "delivery_type": "upload",
+            "asset_folder": "teachalike/1/Raw",
+        }
+        with self.assertRaisesRegex(ValueError, "Unsupported asset category"):
+            Asset.from_cloudinary_metadata(
+                metadata,
+                category="CLIENT_DEFINED_CATEGORY",
+                owner_user_id=1,
+            )
 
     def test_legacy_helpers_delegate_to_central_upload(self):
         voice_file = FileStorage(
@@ -590,7 +675,11 @@ class AssetEndpointTests(unittest.TestCase):
         from sqlalchemy.exc import SQLAlchemyError
 
         upload.side_effect = self._upload_result
-        with patch.object(db.session, "commit", side_effect=SQLAlchemyError("db down")):
+        with patch.object(
+            db.session,
+            "commit",
+            side_effect=SQLAlchemyError("db down"),
+        ):
             response = self.client.post(
                 "/api/assets/profile-image",
                 headers=self._headers(self.owner),
@@ -624,6 +713,40 @@ class AssetEndpointTests(unittest.TestCase):
             )
         self.assertEqual(second.status_code, 500)
         destroy.assert_not_called()
+
+    @patch("app.controllers.asset_controller.delete_asset")
+    @patch("app.controllers.asset_controller.upload_asset")
+    def test_renamed_child_database_failure_cleans_only_new_upload(
+        self, upload, destroy
+    ):
+        from sqlalchemy.exc import SQLAlchemyError
+
+        upload.side_effect = self._upload_result
+        first = self.client.post(
+            f"/api/assets/children/{self.child.id}/profile-image",
+            headers=self._headers(self.owner),
+            data={"file": (io.BytesIO(PNG), "first.png")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(first.status_code, 201, first.json)
+        old_public_id = first.json["data"]["url"]
+        self.child.name = "Renamed Child"
+        db.session.commit()
+
+        with patch.object(db.session, "commit", side_effect=SQLAlchemyError("db down")):
+            second = self.client.post(
+                f"/api/assets/children/{self.child.id}/profile-image",
+                headers=self._headers(self.owner),
+                data={"file": (io.BytesIO(PNG), "second.png")},
+                content_type="multipart/form-data",
+            )
+        self.assertEqual(second.status_code, 500)
+        destroy.assert_called_once()
+        db.session.expire_all()
+        self.assertEqual(
+            db.session.get(Child, self.child.id).profile_image_url,
+            old_public_id,
+        )
 
     def test_voice_and_narration_upload_endpoints(self):
         with (
@@ -662,6 +785,7 @@ class AssetEndpointTests(unittest.TestCase):
                 data={
                     "file": (io.BytesIO(WAV), "narration.wav"),
                     "voice_profile_id": str(voice_id),
+                    "language": "en-US",
                 },
                 content_type="multipart/form-data",
             )
@@ -669,6 +793,10 @@ class AssetEndpointTests(unittest.TestCase):
             narration_response.status_code, 201, narration_response.json
         )
         self.assertIsNotNone(narration_response.json["data"]["generation_id"])
+        generation = db.session.get(
+            BookNarration, narration_response.json["data"]["generation_id"]
+        )
+        self.assertEqual(generation.language, "en-US")
         self.assertIn(
             f"/voice_{voice_id}_{self.book.id}_",
             narration_upload.call_args.kwargs["public_id"],
@@ -681,6 +809,28 @@ class AssetEndpointTests(unittest.TestCase):
             Asset.query.filter_by(asset_category=GENERATED_BOOK_AUDIO).count(),
             1,
         )
+
+    def test_narration_upload_rejects_invalid_language_tag(self):
+        profile = VoiceProfile(
+            parent_id=self.owner.id,
+            voice_sample_url="https://example.test/voice.wav",
+            cloudinary_public_id="voice-language",
+            status=STATUS_READY,
+        )
+        db.session.add(profile)
+        db.session.commit()
+        response = self.client.post(
+            f"/api/assets/books/{self.book.id}/narrations",
+            headers=self._headers(self.owner),
+            data={
+                "file": (io.BytesIO(MP3), "narration.mp3"),
+                "voice_profile_id": str(profile.id),
+                "language": "../../english",
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(response.status_code, 422, response.json)
+        self.assertEqual(BookNarration.query.count(), 0)
 
     def test_voice_profile_accepts_mp3_larger_than_five_mb(self):
         mp3_sample = MP3 + (b"\0" * (6 * 1024 * 1024))
@@ -832,6 +982,7 @@ class AssetEndpointTests(unittest.TestCase):
             status=STATUS_READY,
         )
         self.book.text_content = "A short story."
+        self.app.config["ELEVENLABS_LANGUAGE_CODE"] = "en-US"
         db.session.add(profile)
         db.session.commit()
         response = self.client.post(
@@ -851,6 +1002,7 @@ class AssetEndpointTests(unittest.TestCase):
                 f"{self.book.id}_same_name/voice_{profile.id}_{self.book.id}_{generation.id}"
             ),
         )
+        self.assertEqual(generation.language, "en-US")
 
     def test_background_worker_persists_asset_metadata(self):
         from app.controllers.book_narration_controller import _generate_narration
