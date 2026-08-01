@@ -5,7 +5,14 @@ from concurrent.futures import ThreadPoolExecutor
 from flask import current_app
 from sqlalchemy import or_
 
-from app.models.asset_model import Asset, BOOK_COVER_IMAGE, BOOK_ILLUSTRATION, BOOK_VIDEO
+from app.models.asset_model import (
+    Asset,
+    BOOK_COVER_IMAGE,
+    BOOK_IMAGE,
+    BOOK_ILLUSTRATION,
+    BOOK_VIDEO,
+    TEACHER_BOOK_AUDIO,
+)
 from app.services.cloudinary_service import CloudinaryServiceError, delete_asset
 from app.services.elevenlabs_service import delete_voice
 
@@ -14,7 +21,13 @@ ACCOUNT_CLEANUP_EXECUTOR = ThreadPoolExecutor(
     max_workers=2,
     thread_name_prefix="account-asset-cleanup",
 )
-BOOK_MEDIA_CATEGORIES = (BOOK_COVER_IMAGE, BOOK_ILLUSTRATION, BOOK_VIDEO)
+BOOK_MEDIA_CATEGORIES = (
+    BOOK_COVER_IMAGE,
+    BOOK_IMAGE,
+    BOOK_ILLUSTRATION,
+    BOOK_VIDEO,
+    TEACHER_BOOK_AUDIO,
+)
 
 
 def remove_account_asset_ledger_rows(account_id):

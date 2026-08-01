@@ -4,7 +4,11 @@ import json
 
 from flask import current_app
 
-from app.models.asset_model import Asset
+from app.models.asset_model import (
+    Asset,
+    STATUS_CLEANUP_FAILED,
+    STATUS_DELETED,
+)
 from app.services.cloudinary_service import (
     CloudinaryServiceError,
     delete_asset,
@@ -12,8 +16,33 @@ from app.services.cloudinary_service import (
     validate_uploaded_file,
 )
 from app.validators import MAX_URL_LENGTH, is_safe_http_url
+from app.services.cloudinary_path_service import (
+    get_book_asset_root_folder,
+    get_teachalike_book_asset_root_folder,
+)
+from app.extensions import db
+from app.utils import utc_now
 
 MAX_ILLUSTRATIONS = 8
+
+
+class BookAssetCleanupError(RuntimeError):
+    pass
+
+
+def ensure_book_asset_root(book):
+    """Persist one immutable canonical root without moving older assets."""
+    if book.asset_root_folder:
+        return book.asset_root_folder
+    creator = book.creator
+    if creator is not None and creator.role == "teacher":
+        root = get_book_asset_root_folder(
+            creator.id, creator.name, book.id, book.title
+        )
+    else:
+        root = get_teachalike_book_asset_root_folder(book.id, book.title)
+    book.asset_root_folder = root
+    return root
 
 
 def request_book_data(request):
@@ -86,6 +115,7 @@ def validate_media_files(request):
     cover = request.files.get("cover_image")
     illustrations = request.files.getlist("illustrations")
     video = request.files.get("video")
+    teacher_audio = request.files.get("teacher_audio")
     illustrations = [item for item in illustrations if item and item.filename]
     if len(illustrations) > MAX_ILLUSTRATIONS:
         raise ValueError(f"A book may have at most {MAX_ILLUSTRATIONS} illustrations.")
@@ -99,7 +129,20 @@ def validate_media_files(request):
         video.stream.seek(0)
     else:
         video = None
-    return (cover if cover and cover.filename else None), illustrations, video
+    if teacher_audio and teacher_audio.filename:
+        validate_uploaded_file(teacher_audio, "audio")
+        validate_upload_size(
+            teacher_audio, current_app.config["MAX_BOOK_AUDIO_SIZE_MB"]
+        )
+        teacher_audio.stream.seek(0)
+    else:
+        teacher_audio = None
+    return (
+        cover if cover and cover.filename else None,
+        illustrations,
+        video,
+        teacher_audio,
+    )
 
 
 def asset_reference(asset):
@@ -128,3 +171,30 @@ def cleanup_references(references):
 
 def book_asset_references(book_id):
     return [asset_reference(asset) for asset in Asset.query.filter_by(book_id=book_id).all()]
+
+
+def delete_book_with_registered_assets(book):
+    """Confirm exact Cloudinary cleanup before removing a catalog book."""
+    assets = Asset.query.filter(
+        Asset.book_id == book.id,
+        Asset.deleted_at.is_(None),
+    ).all()
+    failures = False
+    for asset in assets:
+        try:
+            delete_asset(
+                asset.cloudinary_public_id,
+                asset.cloudinary_resource_type,
+                asset.cloudinary_delivery_type,
+            )
+            asset.status = STATUS_DELETED
+            asset.deleted_at = utc_now()
+            asset.active_slot = None
+        except CloudinaryServiceError:
+            asset.status = STATUS_CLEANUP_FAILED
+            failures = True
+    db.session.commit()
+    if failures:
+        raise BookAssetCleanupError("Some book assets could not be deleted.")
+    db.session.delete(book)
+    db.session.commit()
