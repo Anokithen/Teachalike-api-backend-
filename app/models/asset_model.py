@@ -8,6 +8,8 @@ CHILD_PROFILE_IMAGE = "CHILD_PROFILE_IMAGE"
 VOICE_PROFILE = "VOICE_PROFILE"
 GENERATED_BOOK_AUDIO = "GENERATED_BOOK_AUDIO"
 BOOK_VIDEO = "BOOK_VIDEO"
+BOOK_COVER_IMAGE = "BOOK_COVER_IMAGE"
+BOOK_ILLUSTRATION = "BOOK_ILLUSTRATION"
 
 ASSET_CATEGORIES = (
     USER_PROFILE_IMAGE,
@@ -15,6 +17,8 @@ ASSET_CATEGORIES = (
     VOICE_PROFILE,
     GENERATED_BOOK_AUDIO,
     BOOK_VIDEO,
+    BOOK_COVER_IMAGE,
+    BOOK_ILLUSTRATION,
 )
 
 STATUS_PENDING = "pending"
@@ -38,7 +42,9 @@ class Asset(db.Model):
 
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     owner_user_id = db.Column(
-        db.Integer, db.ForeignKey("parents.id", ondelete="CASCADE"), nullable=False
+        db.Integer,
+        db.ForeignKey("parents.id", ondelete="SET NULL", name="fk_assets_owner"),
+        nullable=True,
     )
     child_id = db.Column(
         db.Integer, db.ForeignKey("children.id", ondelete="SET NULL"), nullable=True

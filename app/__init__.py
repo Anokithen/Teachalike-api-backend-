@@ -249,6 +249,8 @@ def _initialize_database_schema(app):
             _ensure_teacher_profile_schema()
             stage = "book schema compatibility"
             _ensure_book_schema()
+            stage = "book asset ownership compatibility"
+            _ensure_book_asset_owner_schema()
             stage = "book narration schema compatibility"
             _ensure_book_narration_schema()
             stage = "schema verification"
@@ -312,15 +314,100 @@ def _ensure_voice_profile_schema():
 
 
 def _ensure_book_schema():
-    """Add book illustration URLs to databases created before book galleries."""
+    """Idempotently add book media and creator-attribution columns."""
     inspector = inspect(db.engine)
     if not inspector.has_table("books"):
         return
     columns = {column["name"] for column in inspector.get_columns("books")}
-    if "image_urls" in columns:
+    additions = {
+        "image_urls": "JSON NULL",
+        "description": "TEXT NULL",
+        "created_by_account_id": "INTEGER NULL",
+        "creator_name_snapshot": "VARCHAR(120) NULL",
+        "creation_request_id": "VARCHAR(64) NULL",
+        "updated_at": "DATETIME NULL",
+    }
+    changed = False
+    for name, sql_type in additions.items():
+        if name not in columns:
+            db.session.execute(text(f"ALTER TABLE books ADD COLUMN {name} {sql_type}"))
+            changed = True
+    if "updated_at" not in columns:
+        db.session.execute(text("UPDATE books SET updated_at = created_at WHERE updated_at IS NULL"))
+    if db.engine.dialect.name == "mysql":
+        updated_column = next(
+            column
+            for column in inspect(db.engine).get_columns("books")
+            if column["name"] == "updated_at"
+        )
+        if updated_column.get("nullable", True):
+            db.session.execute(text(
+                "ALTER TABLE books MODIFY updated_at DATETIME NOT NULL "
+                "DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"
+            ))
+            changed = True
+
+    inspector = inspect(db.engine)
+    indexes = {index["name"] for index in inspector.get_indexes("books")}
+    if "ix_books_created_by_account_id" not in indexes:
+        db.session.execute(text(
+            "CREATE INDEX ix_books_created_by_account_id ON books (created_by_account_id)"
+        ))
+        changed = True
+    if "uq_books_creator_request" not in indexes:
+        db.session.execute(text(
+            "CREATE UNIQUE INDEX uq_books_creator_request "
+            "ON books (created_by_account_id, creation_request_id)"
+        ))
+        changed = True
+    if db.engine.dialect.name == "mysql":
+        foreign_keys = inspect(db.engine).get_foreign_keys("books")
+        has_creator_fk = any(
+            fk.get("constrained_columns") == ["created_by_account_id"]
+            and fk.get("referred_table") == "parents"
+            for fk in foreign_keys
+        )
+        if not has_creator_fk:
+            db.session.execute(text(
+                "ALTER TABLE books ADD CONSTRAINT fk_books_created_by_account "
+                "FOREIGN KEY (created_by_account_id) REFERENCES parents(id) ON DELETE SET NULL"
+            ))
+            changed = True
+    if changed:
+        db.session.commit()
+
+
+def _ensure_book_asset_owner_schema():
+    """Preserve authored-book ledger rows when their teacher is deleted."""
+    inspector = inspect(db.engine)
+    if not inspector.has_table("assets") or db.engine.dialect.name != "mysql":
         return
-    db.session.execute(text("ALTER TABLE books ADD COLUMN image_urls JSON NULL"))
-    db.session.commit()
+    owner_column = next(
+        column for column in inspector.get_columns("assets")
+        if column["name"] == "owner_user_id"
+    )
+    owner_fk = next((
+        fk for fk in inspector.get_foreign_keys("assets")
+        if fk.get("constrained_columns") == ["owner_user_id"]
+        and fk.get("referred_table") == "parents"
+    ), None)
+    ondelete = str((owner_fk or {}).get("options", {}).get("ondelete") or "").upper()
+    if not owner_column.get("nullable", True) or ondelete != "SET NULL":
+        if owner_fk and owner_fk.get("name"):
+            constraint_name = owner_fk["name"]
+            if not constraint_name.replace("_", "").isalnum():
+                raise RuntimeError("Unexpected assets owner constraint name.")
+            db.session.execute(text(
+                f"ALTER TABLE assets DROP FOREIGN KEY `{constraint_name}`"
+            ))
+        db.session.execute(text(
+            "ALTER TABLE assets MODIFY owner_user_id INTEGER NULL"
+        ))
+        db.session.execute(text(
+            "ALTER TABLE assets ADD CONSTRAINT fk_assets_owner "
+            "FOREIGN KEY (owner_user_id) REFERENCES parents(id) ON DELETE SET NULL"
+        ))
+        db.session.commit()
 
 
 def _ensure_book_narration_schema():

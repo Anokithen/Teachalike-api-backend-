@@ -46,6 +46,11 @@ class Parent(db.Model):
         foreign_keys="TeacherProfile.reviewed_by_id",
         back_populates="reviewed_by",
     )
+    created_books = db.relationship(
+        "Book",
+        foreign_keys="Book.created_by_account_id",
+        back_populates="creator",
+    )
 
     def set_password(self, password):
         self.password = generate_password_hash(password)
