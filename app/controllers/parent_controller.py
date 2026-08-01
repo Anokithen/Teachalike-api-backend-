@@ -50,7 +50,7 @@ def _verify_account_password(data, action):
 
 
 def get_me():
-    return jsonify({"parent": current_user.to_dict()}), 200
+    return jsonify({"parent": current_user.to_self_dict()}), 200
 
 
 def update_me():
@@ -114,7 +114,7 @@ def update_me():
         db.session.commit()
         if password_attempt_key:
             account_password_attempts.reset(password_attempt_key)
-        return jsonify({"message": "Profile updated successfully.", "parent": parent.to_dict()}), 200
+        return jsonify({"message": "Profile updated successfully.", "parent": parent.to_self_dict()}), 200
     except IntegrityError:
         db.session.rollback()
         return jsonify({"error": "An account with this email already exists."}), 409

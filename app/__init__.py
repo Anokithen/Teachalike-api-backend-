@@ -28,7 +28,7 @@ def create_app(*, initialize_database=None):
         app,
         resources={r"/api/*": {"origins": app.config["FRONTEND_ORIGINS"]}},
         allow_headers=["Authorization", "Content-Type"],
-        methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+        methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     )
     db.init_app(app)
     jwt.init_app(app)
@@ -100,7 +100,39 @@ def create_app(*, initialize_database=None):
             parent = db.session.get(Parent, int(identity))
             if parent is None or parent.is_banned:
                 return True
+            if (
+                parent.is_teacher
+                and parent.teacher_profile is not None
+                and parent.teacher_profile.approval_status != "approved"
+            ):
+                return True
         return False
+
+    @jwt.revoked_token_loader
+    def revoked_token_callback(_jwt_header, jwt_payload):
+        """Keep approval and ban failures explicit when old tokens are blocked."""
+        identity = jwt_payload.get("sub")
+        account = db.session.get(Parent, int(identity)) if identity is not None else None
+        if account and account.is_banned:
+            return jsonify({
+                "error": "This account has been banned. Contact an administrator.",
+            }), 403
+        if account and account.is_teacher and account.teacher_profile is not None:
+            profile = account.teacher_profile
+            if profile.approval_status == "pending":
+                return jsonify({
+                    "error": "Your teacher account is waiting for administrator approval.",
+                    "error_code": "TEACHER_APPROVAL_PENDING",
+                }), 403
+            if profile.approval_status == "rejected":
+                payload = {
+                    "error": "Your teacher registration was rejected by an administrator.",
+                    "error_code": "TEACHER_APPROVAL_REJECTED",
+                }
+                if profile.rejection_reason:
+                    payload["rejection_reason"] = profile.rejection_reason
+                return jsonify(payload), 403
+        return jsonify({"error": "Token has been revoked."}), 401
 
     register_blueprints(app)
 
@@ -213,6 +245,8 @@ def _initialize_database_schema(app):
             _ensure_voice_profile_schema()
             stage = "profile image schema compatibility"
             _ensure_profile_image_schema()
+            stage = "teacher profile compatibility and backfill"
+            _ensure_teacher_profile_schema()
             stage = "book schema compatibility"
             _ensure_book_schema()
             stage = "book narration schema compatibility"
@@ -333,4 +367,21 @@ def _ensure_profile_image_schema():
             db.session.execute(text(f"ALTER TABLE {table} ADD COLUMN profile_image_url VARCHAR(500) NULL"))
         if "profile_image_public_id" not in columns:
             db.session.execute(text(f"ALTER TABLE {table} ADD COLUMN profile_image_public_id VARCHAR(255) NULL"))
+    db.session.commit()
+
+
+def _ensure_teacher_profile_schema():
+    """Keep legacy teachers active by giving them approved profile rows."""
+    inspector = inspect(db.engine)
+    if not inspector.has_table("teacher_profiles"):
+        return
+    db.session.execute(
+        text(
+            "INSERT INTO teacher_profiles "
+            "(account_id, approval_status, created_at, updated_at) "
+            "SELECT p.id, 'approved', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP "
+            "FROM parents p LEFT JOIN teacher_profiles tp ON tp.account_id = p.id "
+            "WHERE p.role = 'teacher' AND tp.id IS NULL"
+        )
+    )
     db.session.commit()

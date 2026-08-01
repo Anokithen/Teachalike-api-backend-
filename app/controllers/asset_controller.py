@@ -219,7 +219,7 @@ def upload_user_profile_image(legacy_response=False):
         if legacy_response:
             return jsonify({
                 "message": "Profile image updated successfully.",
-                "parent": current_user.to_dict(),
+                "parent": current_user.to_self_dict(),
             }), 200
         return _response("Profile image uploaded.", asset.to_dict(), 201)
     except CloudinaryServiceError:
@@ -282,7 +282,7 @@ def delete_user_profile_image_legacy():
             return _legacy_error(result)
         return jsonify({
             "message": "Profile image removed.",
-            "parent": current_user.to_dict(),
+            "parent": current_user.to_self_dict(),
         }), 200
 
     public_id = current_user.profile_image_public_id
@@ -294,7 +294,7 @@ def delete_user_profile_image_legacy():
         db.session.commit()
         return jsonify({
             "message": "Profile image removed.",
-            "parent": current_user.to_dict(),
+            "parent": current_user.to_self_dict(),
         }), 200
     except CloudinaryServiceError:
         return jsonify({"error": "Profile image removal failed."}), 503
