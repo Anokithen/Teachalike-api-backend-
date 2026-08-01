@@ -1,5 +1,18 @@
 # TeachAlike API
 
+## Demo seed data
+
+After configuring the database, create repeatable local demo data with:
+
+```bash
+python seed.py
+```
+
+The seed adds demo accounts, children, text-only books, mini-games, reading
+progress, feedback, game results, and leaderboard entries. It does not create
+voice profiles, narrations, Cloudinary assets, profile images, book images, or
+videos. Running it again does not duplicate existing seed records.
+
 ## NVIDIA pronunciation recognition
 
 Reading-session microphone recordings are converted to mono 16 kHz WAV with ffmpeg and transcribed server-side through NVIDIA's ASR endpoint. The returned transcript is then scored by the NVIDIA chat model against the target sentence. The NVIDIA key is never sent to the browser, and matching readings receive the existing leaderboard points. A local similarity fallback keeps scoring available during a temporary NVIDIA outage.
