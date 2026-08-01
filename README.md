@@ -138,6 +138,11 @@ returns the latest cached narration for the same book/voice pair. All SDK
 calls run through `app/services/cloudinary_service.py`; folder construction
 runs through `app/services/cloudinary_path_service.py`.
 
+Completed narration uploads may store a validated language tag, while
+background narration records preserve `ELEVENLABS_LANGUAGE_CODE` when it is
+configured. Exact Cloudinary deletion succeeds only after the provider
+confirms `ok` or `not found`; ambiguous results remain retryable in MySQL.
+
 Registration does not create empty Cloudinary folders. The first asset upload
 creates its logical `asset_folder`. Apply
 `migrations/20260726_add_assets.sql` to existing MySQL deployments so normalized

@@ -150,7 +150,8 @@ curl -X POST "$API_URL/api/assets/voice-profiles" \
 curl -X POST "$API_URL/api/assets/books/28/narrations" \
   -H "Authorization: Bearer REPLACE_WITH_JWT" \
   -F "file=@narration.mp3" \
-  -F "voice_profile_id=12"
+  -F "voice_profile_id=12" \
+  -F "language=en-US"
 
 curl -X POST "$API_URL/api/admin/books/28/videos" \
   -H "Authorization: Bearer REPLACE_WITH_ADMIN_JWT" \
@@ -170,6 +171,11 @@ delivery types, format, folder, original name, byte size, dimensions,
 duration, status, relationships, and timestamps. Public responses never
 contain credentials or raw SDK results.
 
+Completed narration uploads may include a validated language tag such as
+`en-US`. Background ElevenLabs generations persist the configured
+`ELEVENLABS_LANGUAGE_CODE` when it is present. The migration adds this
+nullable metadata to `book_narrations` without changing existing records.
+
 Profile replacement uploads first, persists the new metadata/model URL, then
 cleans an older differently named asset. Deterministic overwrites request CDN
 invalidation. If the metadata commit fails after a deterministic overwrite,
@@ -184,8 +190,13 @@ older generation.
 checks voice-profile references, deletes the exact public ID with its stored
 resource/delivery type, clears related model fields, releases `active_slot`,
 and soft-deletes the ledger row. Cloudinary `not found` is treated as
-idempotent success. A failed upstream deletion leaves metadata active for a
-safe retry.
+idempotent success. Any other unconfirmed provider result fails closed and
+leaves metadata active for a safe retry.
+
+The low-level upload service reserves `asset_folder`, `folder`, `public_id`,
+resource type, delivery type, overwrite, invalidation, and timeout controls.
+Callers cannot smuggle these through generic SDK options and bypass the
+server-derived identity.
 
 Account deletion snapshots every database-owned Cloudinary identity before
 MySQL cascades run, then asynchronously deletes those exact assets and
@@ -199,9 +210,10 @@ No test calls the live Cloudinary service:
 
 ```bash
 python -m unittest discover -s tests -v
-python -c "from app import create_app; app = create_app(); print('app import ok')"
+python -c "from app import create_app; app = create_app(initialize_database=False); print('app import ok')"
 ```
 
 The suite mocks the SDK and checks path construction, validation, ownership,
 replacement/cleanup ordering, exact deletion, signed delivery, legacy
-delegation, multiple narration generations, and sanitized provider errors.
+delegation, multiple narration generations, language metadata, fail-closed
+provider results, and sanitized provider errors.
