@@ -56,16 +56,47 @@ def get_generated_book_audio_folder(user_id, book_id, book_name) -> str:
     return f"{get_user_root_folder(user_id)}/Audio/Generated_Books_Audio/{book}"
 
 
-def get_book_video_folder(user_id, admin_id, book_id, book_name) -> str:
-    """Return an administrator's video folder for a catalog book."""
-    book = f"{int(book_id)}_{sanitize_folder_segment(book_name)}"
-    return f"{get_user_root_folder(user_id)}/Video/{int(admin_id)}/{book}"
+def get_books_root_folder() -> str:
+    return f"{_root()}/Books"
 
 
-def get_book_image_folder(user_id, book_id, book_name) -> str:
-    """Return the server-owned image folder for one authored book."""
+def get_teacher_books_folder(teacher_id, teacher_name) -> str:
+    teacher = f"{int(teacher_id)}_{sanitize_folder_segment(teacher_name)}"
+    return f"{get_books_root_folder()}/{teacher}"
+
+
+def get_book_asset_root_folder(teacher_id, teacher_name, book_id, book_name) -> str:
     book = f"{int(book_id)}_{sanitize_folder_segment(book_name)}"
-    return f"{get_user_root_folder(user_id)}/Image/Books/{book}"
+    return f"{get_teacher_books_folder(teacher_id, teacher_name)}/{book}"
+
+
+def get_teachalike_book_asset_root_folder(book_id, book_name) -> str:
+    book = f"{int(book_id)}_{sanitize_folder_segment(book_name)}"
+    return f"{get_books_root_folder()}/TeachAlike/{book}"
+
+
+def get_book_images_folder(teacher_id, teacher_name, book_id, book_name) -> str:
+    return f"{get_book_asset_root_folder(teacher_id, teacher_name, book_id, book_name)}/Images"
+
+
+def get_book_video_folder(teacher_id, teacher_name, book_id, book_name) -> str:
+    return f"{get_book_asset_root_folder(teacher_id, teacher_name, book_id, book_name)}/Video"
+
+
+def get_teacher_book_audio_folder(teacher_id, teacher_name, book_id, book_name) -> str:
+    return f"{get_book_asset_root_folder(teacher_id, teacher_name, book_id, book_name)}/Teacher_voice_audio"
+
+
+def get_book_images_folder_from_root(asset_root) -> str:
+    return f"{str(asset_root).rstrip('/')}/Images"
+
+
+def get_book_video_folder_from_root(asset_root) -> str:
+    return f"{str(asset_root).rstrip('/')}/Video"
+
+
+def get_teacher_book_audio_folder_from_root(asset_root) -> str:
+    return f"{str(asset_root).rstrip('/')}/Teacher_voice_audio"
 
 
 def get_staged_book_media_folder(user_id) -> str:
