@@ -35,9 +35,11 @@ from app.validators import (
     validate_name,
     validate_password,
 )
-from app.services.book_management_service import validate_book_payload
-from app.services.book_management_service import book_asset_references, cleanup_references
-from app.models.asset_model import Asset
+from app.services.book_management_service import ensure_book_asset_root, validate_book_payload
+from app.services.book_management_service import (
+    BookAssetCleanupError,
+    delete_book_with_registered_assets,
+)
 
 
 def _validate_new_account_payload(data):
@@ -128,6 +130,7 @@ def create_book():
         book = Book(**values)
         db.session.add(book)
         db.session.flush()
+        ensure_book_asset_root(book)
         create_default_mini_games(book)
         db.session.commit()
         return jsonify({
@@ -176,13 +179,11 @@ def delete_book(book_id):
     if ReadingSession.query.filter_by(book_id=book_id).first():
         return jsonify({"error": "This book cannot be deleted because it has reading sessions."}), 409
 
-    references = book_asset_references(book.id)
     try:
-        Asset.query.filter_by(book_id=book.id).delete(synchronize_session=False)
-        db.session.delete(book)
-        db.session.commit()
-        cleanup_references(references)
+        delete_book_with_registered_assets(book)
         return jsonify({"message": "Book deleted successfully."}), 200
+    except BookAssetCleanupError:
+        return jsonify({"error": "Book asset cleanup is incomplete. Please retry."}), 503
     except Exception:
         db.session.rollback()
         return jsonify({"error": "An internal server error occurred."}), 500
