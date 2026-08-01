@@ -139,14 +139,18 @@ before deploying the new application version:
 
 ```bash
 mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p "$DB_NAME" \
-  < migrations/20260804_create_teacher_applications.sql
+  < migrations/20260805_repair_teacher_applications_schema.sql
 ```
 
-The migration creates `teacher_applications`, or renames the former
-`teacher_profiles` table when it exists, then backfills legacy teachers. It
-does not reset or delete existing data. No new environment variables are
-required. The earlier `20260801` migration remains the combined bootstrap for
-teacher applications, book views, and book likes on a completely new database.
+The repair migration creates `teacher_applications`, or renames the former
+`teacher_profiles` table when appropriate. It additively repairs missing
+columns, indexes, uniqueness, and foreign keys, recovers rows after interrupted
+deployments, and backfills legacy teachers. It never drops, truncates, recreates,
+or deletes application data. Existing pending, approved, and rejected decisions
+are preserved. If duplicate account rows prevent the required unique
+relationship, deployment stops for manual review rather than deleting a row.
+The earlier `20260801` migration remains the combined bootstrap for teacher
+applications, book views, and book likes on a completely new database.
 
 After that migration, apply the idempotent ownership migration:
 
@@ -247,16 +251,22 @@ The pre-deploy command creates and verifies all model tables before serving
 traffic and fails with the exact initialization stage if the database is not
 ready.
 
-`railway.toml` runs `python -m app.database_setup` once before rollout. The
+`railway.toml` runs `python -m app.database_setup` once before rollout. In the
+Railway backend service, verify the identical command under **Settings → Deploy
+→ Pre-deploy Command**; repository configuration and the service setting must
+both say `python -m app.database_setup`. A successful pre-deploy log must contain
+`Database schema preparation completed` before the new application revision is
+allowed to serve traffic. The
 web worker deliberately skips automatic table creation on Railway, even if an
 old `AUTO_CREATE_TABLES=true` variable is still present. This keeps Gunicorn
 startup fast and prevents duplicate schema work during restarts or scaling.
 The configured start command is explicitly wrapped in `/bin/sh -c` because
 Railway runs Dockerfile service overrides in exec form; the shell wrapper is
 required for `exec` and runtime variable expansion such as `$PORT`.
-The deployment health check uses `/health`, which verifies that the HTTP
-worker is live without running a database query. `/health/ready` remains
-available when database and schema readiness must be checked explicitly.
+The deployment health check uses `/health/ready`, so Railway only marks a
+revision healthy when the database is reachable and the complete
+`teacher_applications` schema is present. `/health` remains a lightweight
+process-liveness endpoint.
 
 Generate a unique JWT secret, for example with `openssl rand -hex 32`. Never
 put database credentials, provider secrets, or JWT secrets in the frontend.
@@ -269,7 +279,7 @@ GET https://your-backend.up.railway.app/health
 GET https://your-backend.up.railway.app/health/ready
 ```
 
-Railway uses `/health` during deployment. Readiness returns HTTP 200 with
+Railway uses `/health/ready` during deployment. Readiness returns HTTP 200 with
 `"database": "ready"` when the database is reachable and its schema is
 complete.
 

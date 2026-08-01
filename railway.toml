@@ -5,7 +5,7 @@ dockerfilePath = "Dockerfile"
 [deploy]
 preDeployCommand = "python -m app.database_setup"
 startCommand = "/bin/sh -c \"exec gunicorn --bind [::]:${PORT:-5000} --workers ${WEB_CONCURRENCY:-1} --threads ${GUNICORN_THREADS:-4} --timeout ${GUNICORN_TIMEOUT:-300} --graceful-timeout 30 --keep-alive 5 --access-logfile - --error-logfile - run:app\""
-healthcheckPath = "/health"
+healthcheckPath = "/health/ready"
 healthcheckTimeout = 60
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 5
