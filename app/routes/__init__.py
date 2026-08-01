@@ -11,6 +11,7 @@ from app.routes.admin_routes import admin_bp
 from app.routes.book_narration_routes import book_narration_bp
 from app.routes.ai_routes import ai_bp
 from app.routes.asset_routes import asset_bp
+from app.routes.teacher_book_routes import teacher_book_bp
 
 
 def register_blueprints(app):
@@ -27,3 +28,4 @@ def register_blueprints(app):
     app.register_blueprint(book_narration_bp)
     app.register_blueprint(ai_bp)
     app.register_blueprint(asset_bp)
+    app.register_blueprint(teacher_book_bp)
