@@ -9,10 +9,12 @@ from app.models.book_model import Book
 from app.models.reading_session_model import ReadingSession
 from app.models.book_view_model import BookView
 from app.models.book_like_model import BookLike
+from app.models.asset_model import Asset, USER_PROFILE_IMAGE
 from app.models.teacher_profile_model import (
     APPROVAL_APPROVED,
     APPROVAL_REJECTED,
     TeacherProfile,
+    VALID_TEACHER_TYPES,
     VALID_APPROVAL_STATUSES,
 )
 from app.utils import utc_now
@@ -24,9 +26,13 @@ from app.services.account_cleanup_service import (
 )
 from app.services.cloudinary_service import (
     CloudinaryServiceError,
+    delete_asset,
+    upload_asset,
     upload_book_media,
     validate_upload_size,
+    validate_uploaded_file,
 )
+from app.services.cloudinary_path_service import get_user_profile_folder
 from app.services.gemini_service import GeminiError, generate_book_draft as generate_gemini_book_draft
 from app.services.groq_service import GroqError, generate_book_draft as generate_groq_book_draft
 from app.services.nvidia_service import NvidiaError, generate_book_draft as generate_nvidia_book_draft
@@ -40,6 +46,10 @@ from app.services.book_management_service import (
     BookAssetCleanupError,
     delete_book_with_registered_assets,
 )
+
+MAX_PHONE_LENGTH = 40
+MAX_ADDRESS_LENGTH = 500
+MAX_ORGANIZATION_LENGTH = 200
 
 
 def _validate_new_account_payload(data):
@@ -82,16 +92,6 @@ def _create_account(role):
         account = Parent(name=str(data.get("name")).strip(), email=email, role=role)
         account.set_password(str(data.get("password")))
         db.session.add(account)
-        if role == ROLE_TEACHER:
-            db.session.flush()
-            db.session.add(
-                TeacherProfile(
-                    account_id=account.id,
-                    approval_status=APPROVAL_APPROVED,
-                    reviewed_by_id=current_user.id,
-                    reviewed_at=utc_now(),
-                )
-            )
         db.session.commit()
         return jsonify(
             {"message": f"{role.capitalize()} account created successfully.", "account": account.to_dict()}
@@ -110,8 +110,131 @@ def register_parent():
 
 
 def register_teacher():
-    """POST /api/admin/teachers — admin creates a teacher account."""
-    return _create_account(ROLE_TEACHER)
+    """POST /api/admin/teachers — create a complete, approved teacher profile."""
+    is_multipart = request.mimetype == "multipart/form-data"
+    data = request.form.to_dict() if is_multipart else request.get_json(silent=True)
+    data = data if isinstance(data, dict) else None
+    errors = _validate_new_account_payload(data)
+
+    phone_number = str((data or {}).get("phone_number") or "").strip()
+    address = str((data or {}).get("address") or "").strip()
+    teacher_type = str((data or {}).get("teacher_type") or "").strip().lower()
+    school_name = str((data or {}).get("school_name") or "").strip()
+    tuition_name = str((data or {}).get("tuition_name") or "").strip()
+    if not phone_number:
+        errors.append("phone_number is required.")
+    elif len(phone_number) > MAX_PHONE_LENGTH:
+        errors.append(f"phone_number must be {MAX_PHONE_LENGTH} characters or fewer.")
+    if not address:
+        errors.append("address is required.")
+    elif len(address) > MAX_ADDRESS_LENGTH:
+        errors.append(f"address must be {MAX_ADDRESS_LENGTH} characters or fewer.")
+    if teacher_type not in VALID_TEACHER_TYPES:
+        errors.append("teacher_type must be school or private_tuition.")
+    if len(school_name) > MAX_ORGANIZATION_LENGTH:
+        errors.append(f"school_name must be {MAX_ORGANIZATION_LENGTH} characters or fewer.")
+    if len(tuition_name) > MAX_ORGANIZATION_LENGTH:
+        errors.append(f"tuition_name must be {MAX_ORGANIZATION_LENGTH} characters or fewer.")
+
+    upload = request.files.get("professional_photo") if is_multipart else None
+    if upload is None or not upload.filename:
+        errors.append("professional_photo is required.")
+    else:
+        try:
+            validate_uploaded_file(upload, "image")
+            validate_upload_size(upload, current_app.config["MAX_PROFILE_IMAGE_SIZE_MB"])
+            upload.stream.seek(0)
+        except ValueError as exc:
+            errors.append(str(exc))
+
+    if errors:
+        oversized = any("exceeds" in error for error in errors)
+        invalid_media = any(
+            marker in error.lower()
+            for error in errors
+            for marker in ("unsupported image", "file contents", "mime type")
+        )
+        return jsonify({"errors": errors}), 413 if oversized else 415 if invalid_media else 400
+
+    email = str(data.get("email")).strip().lower()
+    if Parent.query.filter_by(email=email).first():
+        return jsonify({"error": "An account with this email already exists."}), 409
+
+    metadata = None
+    try:
+        account = Parent(
+            name=str(data.get("name")).strip(),
+            email=email,
+            role=ROLE_TEACHER,
+            is_banned=False,
+        )
+        account.set_password(str(data.get("password")))
+        db.session.add(account)
+        db.session.flush()
+        db.session.add(
+            TeacherProfile(
+                account_id=account.id,
+                phone_number=phone_number,
+                address=address,
+                teacher_type=teacher_type,
+                school_name=school_name or None if teacher_type == "school" else None,
+                tuition_name=tuition_name or None if teacher_type == "private_tuition" else None,
+                approval_status=APPROVAL_APPROVED,
+                reviewed_by_id=current_user.id,
+                reviewed_at=utc_now(),
+            )
+        )
+        folder = get_user_profile_folder(account.id)
+        metadata = upload_asset(
+            upload,
+            folder,
+            resource_type="image",
+            public_id=f"{folder}/profile",
+            overwrite=False,
+            tags=[USER_PROFILE_IMAGE.lower()],
+        )
+        account.profile_image_url = metadata["secure_url"]
+        account.profile_image_public_id = metadata["public_id"]
+        db.session.add(
+            Asset.from_cloudinary_metadata(
+                metadata,
+                category=USER_PROFILE_IMAGE,
+                owner_user_id=account.id,
+                active_slot=f"user:{account.id}:profile",
+            )
+        )
+        db.session.commit()
+        return jsonify({
+            "message": "Teacher account created successfully.",
+            "teacher": _teacher_admin_dict(account),
+        }), 201
+    except IntegrityError:
+        db.session.rollback()
+        _cleanup_teacher_creation_upload(metadata)
+        return jsonify({"error": "An account with this email already exists."}), 409
+    except CloudinaryServiceError:
+        db.session.rollback()
+        return jsonify({"error": "Professional photo upload failed."}), 503
+    except Exception:
+        db.session.rollback()
+        _cleanup_teacher_creation_upload(metadata)
+        return jsonify({"error": "The teacher account could not be created."}), 500
+
+
+def _cleanup_teacher_creation_upload(metadata):
+    if not metadata:
+        return
+    try:
+        delete_asset(
+            metadata["public_id"],
+            metadata["resource_type"],
+            metadata.get("delivery_type") or "upload",
+        )
+    except CloudinaryServiceError:
+        current_app.logger.error(
+            "Admin teacher creation upload cleanup failed for asset_id=%s",
+            metadata.get("asset_id"),
+        )
 
 
 def register_admin():

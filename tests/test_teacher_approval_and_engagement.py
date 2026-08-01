@@ -220,7 +220,9 @@ class TeacherApprovalAndEngagementTests(unittest.TestCase):
         self.assertEqual(access.json["error_code"], "TEACHER_APPROVAL_REJECTED")
         self.assertEqual(refresh.json["error_code"], "TEACHER_APPROVAL_REJECTED")
 
-    def test_legacy_and_admin_created_teachers_are_approved(self):
+    @patch("app.controllers.admin_controller.upload_asset")
+    def test_legacy_and_admin_created_teachers_are_approved(self, upload_asset):
+        upload_asset.return_value = self._cloudinary_metadata()
         legacy = self._account("Legacy", "legacy.teacher@example.com", ROLE_TEACHER)
         db.session.commit()
         self.assertIsNone(legacy.teacher_profile)
@@ -228,12 +230,38 @@ class TeacherApprovalAndEngagementTests(unittest.TestCase):
         db.session.expire_all()
         self.assertEqual(db.session.get(Parent, legacy.id).teacher_profile.approval_status, APPROVAL_APPROVED)
 
-        created = self._post("/api/admin/teachers", headers=self._headers(self.admin), json={
-            "name": "Admin Created", "email": "admin.created@example.com", "password": "SecurePass123!",
-        })
+        created = self._post(
+            "/api/admin/teachers",
+            headers=self._headers(self.admin),
+            data={
+                "name": "Admin Created",
+                "email": "admin.created@example.com",
+                "password": "SecurePass123!",
+                "phone_number": "+94 71 555 0101",
+                "address": "20 School Lane, Colombo",
+                "teacher_type": "school",
+                "school_name": "TeachAlike Academy",
+                "professional_photo": (io.BytesIO(PNG), "admin-teacher.png", "image/png"),
+            },
+            content_type="multipart/form-data",
+        )
         self.assertEqual(created.status_code, 201, created.json)
         account = Parent.query.filter_by(email="admin.created@example.com").one()
         self.assertEqual(account.teacher_profile.approval_status, APPROVAL_APPROVED)
+        self.assertEqual(account.teacher_profile.reviewed_by_id, self.admin.id)
+        self.assertEqual(account.teacher_profile.phone_number, "+94 71 555 0101")
+        self.assertEqual(account.teacher_profile.address, "20 School Lane, Colombo")
+        self.assertEqual(account.teacher_profile.teacher_type, "school")
+        self.assertEqual(account.teacher_profile.school_name, "TeachAlike Academy")
+        self.assertIsNone(account.teacher_profile.tuition_name)
+        self.assertEqual(account.profile_image_url, "https://res.cloudinary.test/profile.png")
+        self.assertEqual(
+            Asset.query.filter_by(
+                owner_user_id=account.id,
+                asset_category=USER_PROFILE_IMAGE,
+            ).count(),
+            1,
+        )
 
     def test_teacher_admin_endpoints_are_private_and_duplicate_safe(self):
         forbidden = self.client.get("/api/admin/teachers", headers=self._headers(self.parent))
