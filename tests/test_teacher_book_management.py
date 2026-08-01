@@ -17,11 +17,11 @@ from app.models.book_model import Book
 from app.models.child_model import Child
 from app.models.parent_model import Parent, ROLE_ADMIN, ROLE_PARENT, ROLE_TEACHER
 from app.models.reading_session_model import ReadingSession
-from app.models.teacher_profile_model import (
+from app.models.teacher_application_model import (
     APPROVAL_APPROVED,
     APPROVAL_PENDING,
     APPROVAL_REJECTED,
-    TeacherProfile,
+    TeacherApplication,
 )
 from app.security import book_creation_attempts
 
@@ -75,7 +75,7 @@ class TeacherBookManagementTests(unittest.TestCase):
     def _teacher(self, name, email, status):
         account = self._account(name, email, ROLE_TEACHER)
         db.session.flush()
-        account.teacher_profile = TeacherProfile(approval_status=status)
+        account.teacher_application = TeacherApplication(approval_status=status)
         return account
 
     def _headers(self, account, key=None):
@@ -302,9 +302,9 @@ class TeacherBookManagementTests(unittest.TestCase):
         self.assertEqual(response.status_code, 404)
 
     def test_book_attribution_never_serializes_private_teacher_fields(self):
-        self.teacher.teacher_profile.phone_number = "+94 secret"
-        self.teacher.teacher_profile.address = "Private home"
-        self.teacher.teacher_profile.school_name = "Private school"
+        self.teacher.teacher_application.phone_number = "+94 secret"
+        self.teacher.teacher_application.address = "Private home"
+        self.teacher.teacher_application.school_name = "Private school"
         db.session.commit()
         payload = self._create(key="private-fields-book").json["book"]
         serialized = str(payload)

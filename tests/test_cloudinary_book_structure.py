@@ -21,11 +21,11 @@ from app.models.asset_model import (
 )
 from app.models.book_model import Book
 from app.models.parent_model import Parent, ROLE_ADMIN, ROLE_PARENT, ROLE_TEACHER
-from app.models.teacher_profile_model import (
+from app.models.teacher_application_model import (
     APPROVAL_APPROVED,
     APPROVAL_PENDING,
     APPROVAL_REJECTED,
-    TeacherProfile,
+    TeacherApplication,
 )
 from app.services.book_management_service import ensure_book_asset_root
 from app.services.cloudinary_path_service import (
@@ -102,7 +102,7 @@ class CloudinaryBookStructureTests(unittest.TestCase):
     def _teacher(self, name, email, status):
         account = self._account(name, email, ROLE_TEACHER)
         db.session.flush()
-        account.teacher_profile = TeacherProfile(approval_status=status)
+        account.teacher_application = TeacherApplication(approval_status=status)
         return account
 
     def _headers(self, account):
