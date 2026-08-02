@@ -30,6 +30,12 @@ def check_pronunciation(session_id):
     return ctrl.check_pronunciation(session_id)
 
 
+@reading_session_bp.route("/<int:session_id>/pronunciation-attempts", methods=["GET"])
+@jwt_required()
+def list_pronunciation_attempts(session_id):
+    return ctrl.list_pronunciation_attempts(session_id)
+
+
 @reading_session_bp.route("/<int:session_id>/pronunciation-transcript", methods=["POST"])
 @jwt_required()
 def transcribe_pronunciation(session_id):

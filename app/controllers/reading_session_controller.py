@@ -1,6 +1,5 @@
 import re
 import math
-from difflib import SequenceMatcher
 
 from flask import current_app, jsonify, request
 from flask_jwt_extended import current_user
@@ -11,14 +10,30 @@ from app.models.child_model import Child
 from app.models.book_model import Book
 from app.models.voice_profile_model import VoiceProfile
 from app.models.reading_session_model import ReadingSession
+from app.models.pronunciation_attempt_model import PronunciationAttempt
 from app.middleware import child_belongs_to_current_parent, voice_profile_belongs_to_current_parent
 from app.controllers.game_result_controller import _award_leaderboard_points
 from app.services.nvidia_speech_service import NvidiaSpeechError, transcribe_audio
 from app.services.groq_service import GroqError, score_pronunciation as score_groq_pronunciation
 from app.services.cloudinary_service import validate_uploaded_file
+from app.services.pronunciation_comparison_service import compare_pronunciation
+from app.security import pronunciation_requests
 
 
 MAX_PRONUNCIATION_POINTS = 50
+
+
+def _enforce_pronunciation_rate_limit(session_id):
+    limit = current_app.config["PRONUNCIATION_RATE_LIMIT_ATTEMPTS"]
+    window = current_app.config["PRONUNCIATION_RATE_LIMIT_WINDOW_SECONDS"]
+    key = f"pronunciation:{current_user.id}:{session_id}"
+    blocked, retry_after = pronunciation_requests.blocked(key, limit, window)
+    if blocked:
+        response = jsonify({"error": "That was lots of practice! Please wait a moment, then try again."})
+        response.headers["Retry-After"] = str(retry_after)
+        return response, 429
+    pronunciation_requests.record_failure(key, window)
+    return None
 
 
 def _book_paragraphs(text):
@@ -37,10 +52,6 @@ def _book_paragraphs(text):
 def _points_for_accuracy(score_percent):
     """Award up to 50 points, reducing one point for every two percent lost."""
     return min(MAX_PRONUNCIATION_POINTS, max(0, math.ceil(score_percent / 2)))
-
-
-def _normalise_spoken_text(text):
-    return " ".join(re.findall(r"[\w']+", text.lower()))
 
 
 def _session_belongs_to_current_parent(session):
@@ -166,6 +177,9 @@ def transcribe_pronunciation(session_id):
         return jsonify({"error": "Reading session not found."}), 404
     if session.completed_at:
         return jsonify({"error": "This reading session is already complete."}), 400
+    limited = _enforce_pronunciation_rate_limit(session_id)
+    if limited:
+        return limited
     recording = request.files.get("audio")
     if recording is None or not recording.filename:
         return jsonify({"error": "A microphone recording is required."}), 400
@@ -183,12 +197,15 @@ def transcribe_pronunciation(session_id):
 
 
 def check_pronunciation(session_id):
-    """Compare browser speech-to-text with a book paragraph and award points once."""
+    """Extend the existing pronunciation flow with deterministic word alignment."""
     session = db.session.get(ReadingSession, session_id)
     if not _session_belongs_to_current_parent(session):
         return jsonify({"error": "Reading session not found."}), 404
     if session.completed_at:
         return jsonify({"error": "This reading session is already complete."}), 400
+    limited = _enforce_pronunciation_rate_limit(session_id)
+    if limited:
+        return limited
 
     data = request.get_json(silent=True) or {}
     # Accept the old key for clients that have not been updated yet.
@@ -204,74 +221,154 @@ def check_pronunciation(session_id):
     if paragraph_index >= len(paragraphs):
         return jsonify({"error": "That paragraph does not exist in this book."}), 400
 
-    expected = _normalise_spoken_text(paragraphs[paragraph_index])
-    spoken = _normalise_spoken_text(transcript)
-    if not expected or not spoken:
-        return jsonify({"error": "We could not compare that reading. Please try again."}), 400
+    original_text = paragraphs[paragraph_index]
+    spoken_text = transcript.strip()
+    try:
+        comparison = compare_pronunciation(original_text, spoken_text, paragraph_index)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    text_match_accuracy = comparison.pop("text_match_accuracy")
 
     selected_model = str(current_app.config.get("GROQ_MODEL") or "").strip() or None
     scoring_provider = "groq"
     scoring_feedback = None
     try:
         score_percent, scoring_feedback = score_groq_pronunciation(
-            paragraphs[paragraph_index], transcript.strip(), current_app.config
+            original_text, spoken_text, current_app.config
         )
-        score = score_percent / 100
+        accuracy_percent = round(score_percent)
+        provider_accuracy = accuracy_percent
     except GroqError:
-        # Keep the test usable when the external scoring provider is briefly
-        # unavailable; transcription still came from the configured ASR service.
-        score = SequenceMatcher(None, expected, spoken).ratio()
+        # The fallback is explicitly transcript matching, not a phonetic score.
+        accuracy_percent = text_match_accuracy
         scoring_provider = "local-fallback"
-    accuracy_percent = round(score * 100)
+        selected_model = None
+        provider_accuracy = None
+        scoring_feedback = (
+            "Sometimes background noise can change what we hear. "
+            "You can try the word again."
+        )
     points_for_reading = _points_for_accuracy(accuracy_percent)
+    # Lock the session row in MySQL so two simultaneous retries cannot both
+    # observe an unawarded paragraph and duplicate leaderboard points.
+    db.session.execute(
+        db.select(ReadingSession).where(ReadingSession.id == session.id).with_for_update()
+    ).scalar_one()
+    db.session.refresh(session, attribute_names=["progress_log"])
     log = list(session.progress_log or [])
-    already_awarded = any(
+    legacy_award_exists = any(
         entry.get("type") == "pronunciation_check"
         and entry.get("awarded_points", 0) > 0
         and entry.get("paragraph_index", entry.get("sentence_index")) == paragraph_index
         for entry in log
         if isinstance(entry, dict)
     )
+    stored_award_exists = PronunciationAttempt.query.filter_by(
+        reading_session_id=session.id,
+        paragraph_index=paragraph_index,
+    ).filter(PronunciationAttempt.points_awarded > 0).first() is not None
+    already_awarded = legacy_award_exists or stored_award_exists
     points_awarded = points_for_reading if not already_awarded else 0
 
+    previous_attempt = PronunciationAttempt.query.filter_by(
+        reading_session_id=session.id,
+        paragraph_index=paragraph_index,
+    ).order_by(PronunciationAttempt.created_at.desc(), PronunciationAttempt.id.desc()).first()
+    improvement = None
+    if previous_attempt and text_match_accuracy > previous_attempt.text_match_accuracy:
+        improvement = round(text_match_accuracy - previous_attempt.text_match_accuracy)
+
+    practice_count = comparison["summary"]["words_needing_practice"]
+    if practice_count == 0:
+        message = "Amazing reading! Every expected word was heard."
+    elif text_match_accuracy >= 75:
+        message = f"Great job! Let’s practise {practice_count} word{'s' if practice_count != 1 else ''}."
+    elif text_match_accuracy >= 50:
+        message = f"Good effort! Let’s practise {practice_count} word{'s' if practice_count != 1 else ''}."
+    else:
+        message = "Nice try—let’s read it slowly together."
+
     try:
+        summary = comparison["summary"]
+        attempt = PronunciationAttempt(
+            reading_session_id=session.id,
+            paragraph_index=paragraph_index,
+            original_text=original_text,
+            spoken_transcript=spoken_text,
+            provider_accuracy=provider_accuracy,
+            text_match_accuracy=text_match_accuracy,
+            correct_word_count=summary["correct_words"],
+            substitution_count=summary["substitutions"],
+            deletion_count=summary["skipped_words"],
+            insertion_count=summary["extra_words"],
+            comparison_data=comparison,
+            scoring_provider=scoring_provider,
+            scoring_model=selected_model,
+            points_awarded=points_awarded,
+        )
+        db.session.add(attempt)
+        db.session.flush()
         log.append(
             {
                 "type": "pronunciation_check",
                 "paragraph_index": paragraph_index,
-                "transcript": transcript.strip(),
+                "transcript": spoken_text,
                 "accuracy": accuracy_percent,
+                "text_match_accuracy": text_match_accuracy,
                 "awarded_points": points_awarded,
                 "scoring_provider": scoring_provider,
                 "scoring_model": selected_model,
+                "attempt_id": attempt.id,
             }
         )
         session.progress_log = log
         if points_awarded:
             _award_leaderboard_points(session.child_id, points_awarded)
         db.session.commit()
-        message = (
-            f"Great reading! {points_awarded} points have been added to the leaderboard."
-            if points_awarded
-            else "This paragraph was already rewarded."
-            if already_awarded
-            else "Keep trying — read the paragraph again a little more clearly."
-        )
         return jsonify(
             {
                 "correct": accuracy_percent > 0,
                 "accuracy": accuracy_percent,
+                "provider_accuracy": provider_accuracy,
+                "text_match_accuracy": text_match_accuracy,
                 "points_awarded": points_awarded,
                 "already_awarded": already_awarded,
                 "scoring_provider": scoring_provider,
                 "scoring_model": selected_model,
                 "feedback": scoring_feedback,
                 "message": message,
+                "comparison": comparison,
+                "attempt_id": attempt.id,
+                "improvement": improvement,
             }
         ), 200
     except Exception:
         db.session.rollback()
         return jsonify({"error": "An internal server error occurred."}), 500
+
+
+def list_pronunciation_attempts(session_id):
+    """Return private pronunciation history newest-first for an owned session."""
+    session = db.session.get(ReadingSession, session_id)
+    if not _session_belongs_to_current_parent(session):
+        return jsonify({"error": "Reading session not found."}), 404
+
+    paragraph_index = request.args.get("paragraph_index")
+    query = PronunciationAttempt.query.filter_by(reading_session_id=session.id)
+    if paragraph_index is not None:
+        try:
+            parsed_index = int(paragraph_index)
+        except (TypeError, ValueError):
+            return jsonify({"error": "paragraph_index must be a non-negative integer."}), 400
+        if parsed_index < 0 or str(parsed_index) != paragraph_index.strip():
+            return jsonify({"error": "paragraph_index must be a non-negative integer."}), 400
+        query = query.filter_by(paragraph_index=parsed_index)
+
+    attempts = query.order_by(
+        PronunciationAttempt.created_at.desc(),
+        PronunciationAttempt.id.desc(),
+    ).all()
+    return jsonify({"pronunciation_attempts": [attempt.to_dict() for attempt in attempts]}), 200
 
 
 def list_child_reading_sessions(child_id):
