@@ -15,7 +15,12 @@ from app.models.game_result_model import GameResult
 from app.models.mini_game_model import MiniGame
 from app.middleware import child_belongs_to_current_parent
 from app.middleware import voice_profile_belongs_to_current_parent
-from app.controllers.game_result_controller import _award_leaderboard_points, _maximum_game_score
+from app.controllers.game_result_controller import (
+    SUPPORTED_GAMES,
+    _award_leaderboard_points,
+    _maximum_game_score,
+    grade_game_answers,
+)
 
 MAX_SYNC_ITEMS_PER_TYPE = 100
 MAX_PROGRESS_ENTRIES = 1000
@@ -239,20 +244,35 @@ def sync_offline_activity():
                 errors.append("game_result entry: invalid game_id.")
                 continue
             game_id = game.id
-            try:
-                if isinstance(item.get("score"), bool) or isinstance(item.get("score"), float) and not item["score"].is_integer():
-                    raise ValueError
-                score = int(item.get("score", 0))
-            except (TypeError, ValueError):
-                errors.append("game_result entry: score must be a whole number.")
-                continue
-            if score < 0:
-                errors.append("game_result entry: score cannot be negative.")
-                continue
-            maximum_score = _maximum_game_score(game)
-            if maximum_score is not None and score > maximum_score:
-                errors.append(f"game_result entry: score cannot be greater than {maximum_score}.")
-                continue
+            if game.game_type in SUPPORTED_GAMES:
+                if "score" in item:
+                    errors.append("game_result entry: supported game scores are calculated by the server.")
+                    continue
+                try:
+                    grading = grade_game_answers(
+                        game, item.get("answers"), difficulty=item.get("difficulty")
+                    )
+                except ValueError as exc:
+                    errors.append(f"game_result entry: {exc}")
+                    continue
+                score = grading["score"]
+            else:
+                try:
+                    if isinstance(item.get("score"), bool) or isinstance(item.get("score"), float) and not item["score"].is_integer():
+                        raise ValueError
+                    score = int(item.get("score", 0))
+                except (TypeError, ValueError):
+                    errors.append("game_result entry: score must be a whole number.")
+                    continue
+                maximum_score = _maximum_game_score(game)
+                if score < 0 or score > maximum_score:
+                    errors.append(f"game_result entry: score must be between 0 and {maximum_score}.")
+                    continue
+                grading = {
+                    "correct_answers": None,
+                    "total_questions": None,
+                    "stored_answers": None,
+                }
             completed_at, timestamp_error = _parse_sync_datetime(item.get("completed_at"), "completed_at")
             if timestamp_error:
                 errors.append(f"game_result entry: {timestamp_error}")
@@ -261,6 +281,11 @@ def sync_offline_activity():
                 child_id=child_id,
                 game_id=game_id,
                 score=score,
+                correct_answers=grading["correct_answers"],
+                total_questions=grading["total_questions"],
+                answers_data=grading["stored_answers"],
+                game_content_version=game.content_version,
+                points_awarded=score,
                 completed_at=completed_at or utc_now(),
             )
             db.session.add(result)
