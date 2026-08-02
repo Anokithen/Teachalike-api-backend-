@@ -261,6 +261,9 @@ class Config:
     GEMINI_API_KEY = _env_value("GEMINI_API_KEY", "GOOGLE_API_KEY")
     GEMINI_MODEL = _env_value("GEMINI_MODEL", default="gemini-2.5-flash")
     GEMINI_REQUEST_TIMEOUT = int(_env_value("GEMINI_REQUEST_TIMEOUT", default="45"))
+    MINI_GAME_GENERATION_RETRIES = 2
+    MINI_GAME_REGENERATION_RATE_LIMIT = 10
+    MINI_GAME_REGENERATION_WINDOW_SECONDS = 3600
 
     # Groq model discovery and chat calls stay server-side. NVIDIA/Gemini remain
     # available as legacy provider overrides for existing deployments.

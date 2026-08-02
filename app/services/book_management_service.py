@@ -24,6 +24,7 @@ from app.extensions import db
 from app.utils import utc_now
 
 MAX_ILLUSTRATIONS = 8
+MAX_BOOK_TEXT_CHARACTERS = 120_000
 
 
 class BookAssetCleanupError(RuntimeError):
@@ -78,6 +79,11 @@ def validate_book_payload(data):
         errors.append("age_group must be 50 characters or fewer.")
     if reading_level not in {"beginner", "intermediate", "advanced"}:
         errors.append("reading_level must be beginner, intermediate, or advanced.")
+    text_content = str(data.get("text_content", "")).strip()
+    if len(text_content) > MAX_BOOK_TEXT_CHARACTERS:
+        errors.append(
+            f"text_content must be {MAX_BOOK_TEXT_CHARACTERS} characters or fewer."
+        )
     if not isinstance(image_urls, list) or len(image_urls) > MAX_ILLUSTRATIONS or any(
         not isinstance(url, str) or not is_safe_http_url(url) for url in image_urls
     ):
@@ -100,7 +106,7 @@ def validate_book_payload(data):
         "description": description or None,
         "age_group": age_group,
         "reading_level": reading_level,
-        "text_content": str(data.get("text_content", "")).strip() or None,
+        "text_content": text_content or None,
         "content_url": urls["content_url"] or None,
         "cover_image_url": urls["cover_image_url"] or None,
         "video_url": urls["video_url"] or None,
