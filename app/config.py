@@ -261,6 +261,16 @@ class Config:
     GEMINI_API_KEY = _env_value("GEMINI_API_KEY", "GOOGLE_API_KEY")
     GEMINI_MODEL = _env_value("GEMINI_MODEL", default="gemini-2.5-flash")
     GEMINI_REQUEST_TIMEOUT = int(_env_value("GEMINI_REQUEST_TIMEOUT", default="45"))
+    # Kimi generates mini-games through NVIDIA NIM's OpenAI-compatible endpoint.
+    # KIMI_API_KEY may be used to isolate its credential; NVIDIA_API_KEY/NVAPI_KEY
+    # remain accepted for deployments that share one NVIDIA credential.
+    KIMI_API_KEY = _env_value("KIMI_API_KEY", "NVIDIA_API_KEY", "NVAPI_KEY")
+    KIMI_API_URL = _env_value(
+        "KIMI_API_URL",
+        default="https://integrate.api.nvidia.com/v1/chat/completions",
+    )
+    KIMI_MODEL = _env_value("KIMI_MODEL", default="moonshotai/kimi-k2.6")
+    KIMI_REQUEST_TIMEOUT = int(_env_value("KIMI_REQUEST_TIMEOUT", default="120"))
     MINI_GAME_GENERATION_RETRIES = 2
     MINI_GAME_REGENERATION_RATE_LIMIT = 10
     MINI_GAME_REGENERATION_WINDOW_SECONDS = 3600

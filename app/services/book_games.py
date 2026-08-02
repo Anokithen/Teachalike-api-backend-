@@ -15,13 +15,13 @@ from flask import current_app
 from app.extensions import db
 from app.models.book_model import Book
 from app.models.mini_game_model import MiniGame
-from app.services.gemini_service import GeminiError, generate_book_game_bundle
+from app.services.kimi_service import generate_book_game_bundle
 from app.utils import utc_now
 
 
 GAME_TYPES = ("word_puzzle", "spelling", "quiz")
 GENERATION_STATUSES = ("pending", "generating", "ready", "fallback", "failed", "stale")
-GENERATOR_VERSION = "book-games-v3"
+GENERATOR_VERSION = "book-games-v4-kimi"
 MAX_GENERATION_BOOK_CHARACTERS = 120_000
 MIN_GROUNDED_WORDS = 5
 DIFFICULTIES = {"easy", "medium", "hard"}
@@ -36,7 +36,7 @@ STOP_WORDS = {
     "you", "your", "என்று", "ஒரு", "இந்த", "அது", "மற்றும்", "இல்",
 }
 UNSAFE_OUTPUT_RE = re.compile(
-    r"<\s*/?\s*[a-z][^>]*>|system\s+prompt|x-goog-api-key|gemini_api_key|provider\s+headers?",
+    r"<\s*/?\s*[a-z][^>]*>|system\s+prompt|(?:gemini|kimi)_api_key|x-goog-api-key|provider\s+headers?",
     re.IGNORECASE,
 )
 
@@ -471,7 +471,12 @@ def ensure_book_games(book_id, *, force=False, config=None):
         fallback = None
 
     bundle = None
-    has_key = bool(str(config.get("GEMINI_API_KEY") or config.get("GOOGLE_API_KEY") or "").strip())
+    has_key = bool(str(
+        config.get("KIMI_API_KEY")
+        or config.get("NVIDIA_API_KEY")
+        or config.get("NVAPI_KEY")
+        or ""
+    ).strip())
     if fallback is not None and has_key:
         retries = max(1, min(3, int(config.get("MINI_GAME_GENERATION_RETRIES", 2))))
         requested_count = question_count_for_text(text)
@@ -481,8 +486,8 @@ def ensure_book_games(book_id, *, force=False, config=None):
                     snapshot, config, requested_count, detect_book_language(text)
                 )
                 bundle = validate_generated_bundle(raw, snapshot, requested_count)
-                provider = "gemini"
-                model = str(config.get("GEMINI_MODEL") or "").strip() or None
+                provider = "kimi"
+                model = str(config.get("KIMI_MODEL") or "").strip() or None
                 break
             # Provider SDKs may raise transport/library-specific exceptions.
             # Treat every provider-call failure as retryable here and never let
@@ -524,7 +529,7 @@ def ensure_book_games(book_id, *, force=False, config=None):
         key = "questions" if game.game_type == "quiz" else "words"
         game.content = {key: generated_content}
         game.rules = _rules_for(game.game_type, generated_content)
-        game.generation_status = "ready" if provider == "gemini" else "fallback"
+        game.generation_status = "ready" if provider == "kimi" else "fallback"
     db.session.commit()
     return [game for game in stored_games if game is not None], True
 

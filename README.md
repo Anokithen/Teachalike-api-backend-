@@ -4,7 +4,7 @@
 
 The existing `MiniGame` system automatically prepares `quiz`, `word_puzzle`,
 and `spelling` records after either an admin or approved teacher saves a book
-with usable `text_content`. Gemini receives only saved book title, text, age
+with usable `text_content`. Kimi receives only saved book title, text, age
 group, and reading level. Story text is clearly delimited as untrusted data;
 child and account data is never sent. Generated JSON is schema-checked and all
 excerpts, quiz answers, puzzle words, and spelling words must be grounded in the
@@ -17,7 +17,7 @@ GET; cover-only changes do not regenerate. Relevant edits mark the old rows
 `stale` and create a new content version, preserving historical `GameResult`
 links. Lifecycle values are `pending`, `generating`, `ready`, `fallback`,
 `failed`, and `stale`. The current bounded synchronous workflow commits
-`generating` before the Gemini call, so no database transaction remains open
+`generating` before the Kimi call, so no database transaction remains open
 while waiting for the provider. Move the provider step to a durable queue if a
 future deployment needs multiple generation workers.
 
@@ -41,10 +41,10 @@ Endpoints:
   answer, caps points, saves answer data and content version, and updates the
   leaderboard. Client scores and answer keys are rejected.
 
-Gemini uses the existing server-only `GEMINI_API_KEY` (or compatible existing
-Google key), `GEMINI_MODEL`, and timeout configuration; no new environment
-variable is required. The book's dominant Unicode script is used for supported
-language guidance, with English as the documented uncertain-language fallback.
+Kimi uses NVIDIA NIM's server-only `KIMI_API_KEY` (or the shared
+`NVIDIA_API_KEY`/`NVAPI_KEY`), `KIMI_MODEL`, endpoint, and timeout configuration.
+The book's dominant Unicode script is used for supported language guidance,
+with English as the documented uncertain-language fallback.
 
 For an existing MySQL/Railway database, back up the database and run:
 
@@ -54,8 +54,8 @@ mysql --host="$DB_HOST" --port="$DB_PORT" --user="$DB_USER" --password \
 ```
 
 The migration is idempotent and preserves existing games/results. Deploy the
-backend migration before the frontend. Railway must provide the same Gemini
-configuration already used by the application; provider failure remains safe.
+backend migration before the frontend. Railway must provide the Kimi/NVIDIA
+configuration; provider failure remains safe.
 Run backend verification with:
 
 ```bash
@@ -414,19 +414,26 @@ complete.
 
 The browser records audio, uploads it to the authenticated `/api/reading-sessions/:id/pronunciation-transcript` endpoint, and then sends the returned transcript to the existing pronunciation scoring endpoint. Recordings are deleted from the server immediately after transcription.
 
-## Gemini story word quizzes
+## Kimi story mini-games
 
-Every book gets a quiz grounded in its title, reading level, and full story text. Gemini creates child-friendly multiple-choice questions that mix word meaning, context, and story understanding. The API validates that each answer and target word are grounded in the book before saving the quiz JSON in the existing `mini_games.content` field.
+Every book gets quiz, word-puzzle, and spelling content grounded in its title,
+reading level, and full story text. Kimi creates child-friendly activities through
+NVIDIA NIM. The API validates every answer, excerpt, and target word against the
+saved book before storing content in the existing `mini_games.content` field.
 
-Configure Gemini on the API server:
+Configure Kimi on the API server:
 
 ```env
-GEMINI_API_KEY=your-server-side-key
-GEMINI_MODEL=gemini-2.5-flash
-GEMINI_REQUEST_TIMEOUT=45
+KIMI_API_KEY=your-server-side-nvidia-key
+KIMI_MODEL=moonshotai/kimi-k2.6
+KIMI_API_URL=https://integrate.api.nvidia.com/v1/chat/completions
+KIMI_REQUEST_TIMEOUT=120
 ```
 
-Legacy static quizzes are upgraded the next time the book's mini-games are opened. If Gemini is unavailable, a grounded deterministic fallback keeps the book playable and will be replaced by Gemini once the key is configured.
+`NVIDIA_API_KEY` or `NVAPI_KEY` can be used instead of `KIMI_API_KEY`. Legacy
+games are upgraded the next time the book's mini-games are opened. If Kimi is
+unavailable, a grounded deterministic fallback keeps the book playable and will
+be replaced by Kimi once the key is configured.
 
 ## NVIDIA book generation
 
