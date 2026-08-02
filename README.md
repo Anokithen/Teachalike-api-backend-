@@ -201,9 +201,57 @@ progress, feedback, game results, and leaderboard entries. It does not create
 voice profiles, narrations, Cloudinary assets, profile images, book images, or
 videos. Running it again does not duplicate existing seed records.
 
-## NVIDIA pronunciation recognition
+## Pronunciation recognition and deterministic comparison
 
-Reading-session microphone recordings are converted to mono 16 kHz WAV with ffmpeg and transcribed server-side through NVIDIA's ASR endpoint. The returned transcript is then scored by the NVIDIA chat model against the target sentence. The NVIDIA key is never sent to the browser, and matching readings receive the existing leaderboard points. A local similarity fallback keeps scoring available during a temporary NVIDIA outage.
+Feature 5 extends the existing reading-session flow; it does not introduce a
+second session system. Microphone recordings are converted to mono 16 kHz WAV
+with ffmpeg and transcribed server-side through NVIDIA ASR. The temporary source
+and WAV files are removed in a `finally` block and raw recordings are not saved
+in MySQL or Cloudinary.
+
+`POST /api/reading-sessions/<session_id>/pronunciation-check` accepts
+`paragraph_index` plus `transcript` (and still accepts the legacy
+`sentence_index` key). The server always reloads the selected paragraph from
+the saved `Book`; client-supplied paragraph text, scores, points, and comparison
+data are ignored. The response keeps the existing fields and adds:
+
+- `provider_accuracy`: the Groq reading score, or null when unavailable (`accuracy` remains a numeric backwards-compatible field);
+- `text_match_accuracy`: correct aligned expected words / expected words × 100;
+- `scoring_provider` and `scoring_model`;
+- `comparison.summary`, aligned `comparison.tokens`, and `comparison.practice_words`;
+- `attempt_id` and a positive-only `improvement` value when applicable.
+
+The reusable `pronunciation_comparison_service` uses bounded word-level
+Levenshtein alignment. It compares Unicode NFKC/case-folded keys, treats straight
+and curly internal apostrophes as explicit equivalents, ignores punctuation for
+matching, and preserves the original display token and character offsets. Every
+expected token has zero-based paragraph, sentence, sentence-word, global-word,
+and character locations. Insertions have `after_word_index` and
+`before_word_index` anchors. Status values are `correct`, `substitution`
+(`Heard differently`), `deletion` (`Skipped`), and `insertion` (`Extra word`).
+
+This is transcript fidelity, not a phonetic diagnosis. NVIDIA currently returns
+a transcript rather than word/phoneme pronunciation confidence, so the API and
+UI never claim that a mismatch proves mispronunciation. Accent, microphone
+quality, or background noise may affect the detected words. Groq provides the
+existing separate reading score; if it is unavailable, `scoring_provider` is
+`local-fallback`, `scoring_model` and `provider_accuracy` are null, and the
+explicitly labelled compatibility fallback uses deterministic text-match
+accuracy.
+
+Each check creates a private `PronunciationAttempt`. Retrieve owned-session
+history newest-first with:
+
+```text
+GET /api/reading-sessions/<session_id>/pronunciation-attempts
+GET /api/reading-sessions/<session_id>/pronunciation-attempts?paragraph_index=0
+```
+
+Both endpoints require the existing JWT and child/session ownership check.
+Attempts cascade with their reading session. `ReadingSession.progress_log`
+continues to receive a compact compatibility entry. A locked session row plus
+the existing award history ensures a paragraph can award leaderboard points
+only once, while every retry stores a fresh comparison.
 
 1. Install API dependencies: `pip install -r requirements.txt`.
 2. Install `ffmpeg` and ensure `ffmpeg` is available on the server PATH.
@@ -214,11 +262,30 @@ Reading-session microphone recordings are converted to mono 16 kHz WAV with ffmp
    NVIDIA_ASR_API_URL=https://1598d209-5e27-4d3c-8079-4751568b1081.invocation.api.nvcf.nvidia.com/v1/audio/transcriptions
    NVIDIA_ASR_LANGUAGE=en-US
    NVIDIA_ASR_REQUEST_TIMEOUT=45
-   NVIDIA_PRONUNCIATION_API_KEY=your-rotated-server-side-key
-   NVIDIA_PRONUNCIATION_REQUEST_TIMEOUT=20
+   GROQ_API_KEY=your-groq-api-key
+   GROQ_MODEL=openai/gpt-oss-120b
+   PRONUNCIATION_RATE_LIMIT_ATTEMPTS=60
+   PRONUNCIATION_RATE_LIMIT_WINDOW_SECONDS=3600
    ```
 
 4. Start the Flask API with `python run.py`.
+
+### Database migration and tests
+
+`PronunciationAttempt` is imported by `app.models` before `db.create_all()`.
+The project’s idempotent schema preparation therefore creates the
+MySQL-compatible `pronunciation_attempts` table, its cascade foreign key, and
+session/paragraph/created-at indexes exactly once. Before deployment run:
+
+```bash
+python -m app.database_setup
+python -m unittest discover -s tests -v
+```
+
+On Railway the existing pre-deploy command runs the same schema preparation.
+Back up production data first as usual; this release adds a table and does not
+rewrite saved book text or existing progress logs. External NVIDIA, Groq, and
+Cloudinary calls are mocked by the pronunciation tests.
 
 ## Railway deployment
 
