@@ -21,7 +21,7 @@ from app.utils import utc_now
 
 GAME_TYPES = ("word_puzzle", "spelling", "quiz")
 GENERATION_STATUSES = ("pending", "generating", "ready", "fallback", "failed", "stale")
-GENERATOR_VERSION = "book-games-v4-kimi"
+GENERATOR_VERSION = "book-games-v5-kimi-full-story"
 MAX_GENERATION_BOOK_CHARACTERS = 120_000
 MIN_GROUNDED_WORDS = 5
 DIFFICULTIES = {"easy", "medium", "hard"}
@@ -130,8 +130,8 @@ def detect_book_language(text):
 
 
 def question_count_for_text(text):
-    count = len(_word_occurrences(text))
-    return 5 if count < 100 else 8 if count < 500 else 10
+    """Story Challenge always contains the required minimum of ten questions."""
+    return 10
 
 
 def _safe_string(value, maximum):
@@ -313,7 +313,7 @@ def deterministic_fallback_bundle(snapshot):
         })
 
     requested_count = question_count_for_text(text)
-    quiz_words = word_items[:requested_count]
+    quiz_words = [word_items[index % len(word_items)] for index in range(requested_count)]
     questions = []
     all_options = [item["word"] for item in word_items]
     skills = ["vocabulary", "story_comprehension", "event", "sequence", "main_idea"]

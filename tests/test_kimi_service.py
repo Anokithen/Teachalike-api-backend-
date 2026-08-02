@@ -24,6 +24,11 @@ class KimiServiceTests(unittest.TestCase):
 
     @patch("app.services.kimi_service.requests.post")
     def test_calls_nvidia_chat_completions_and_parses_json(self, post):
+        self.book["text_content"] = (
+            "The complete book begins here. "
+            + ("Every chapter remains in the prompt. " * 1_000)
+            + "The complete book ends here."
+        )
         expected = {
             "questions": [],
             "word_puzzle_words": [],
@@ -43,6 +48,10 @@ class KimiServiceTests(unittest.TestCase):
         self.assertEqual(request.kwargs["headers"]["Authorization"], "Bearer test-only-key")
         self.assertEqual(request.kwargs["json"]["model"], "moonshotai/kimi-k2.6")
         self.assertFalse(request.kwargs["json"]["stream"])
+        prompt = request.kwargs["json"]["messages"][1]["content"]
+        self.assertIn("Create a minimum of 10 questions", prompt)
+        self.assertIn(self.book["text_content"], prompt)
+        self.assertIn("<complete_book_content>", prompt)
 
     def test_requires_a_server_side_key(self):
         with self.assertRaises(KimiError):

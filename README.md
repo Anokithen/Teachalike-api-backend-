@@ -417,9 +417,10 @@ The browser records audio, uploads it to the authenticated `/api/reading-session
 ## Kimi story mini-games
 
 Every book gets quiz, word-puzzle, and spelling content grounded in its title,
-reading level, and full story text. Kimi creates child-friendly activities through
-NVIDIA NIM. The API validates every answer, excerpt, and target word against the
-saved book before storing content in the existing `mini_games.content` field.
+reading level, and full story text. The complete saved book content is sent to
+Kimi, and every Story Challenge contains 10 questions. Kimi creates child-friendly
+activities through NVIDIA NIM. The API validates every answer, excerpt, and target
+word against the saved book before storing content in `mini_games.content`.
 
 Configure Kimi on the API server:
 
