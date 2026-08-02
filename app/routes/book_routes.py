@@ -38,6 +38,18 @@ def list_book_mini_games(book_id):
     return game_ctrl.list_book_mini_games(book_id)
 
 
+@book_bp.route("/<int:book_id>/mini-games/generation-status", methods=["GET"])
+@jwt_required()
+def mini_game_generation_status(book_id):
+    return game_ctrl.generation_status(book_id)
+
+
+@book_bp.route("/<int:book_id>/mini-games/regenerate", methods=["POST"])
+@jwt_required()
+def regenerate_mini_games(book_id):
+    return game_ctrl.regenerate_book_games(book_id)
+
+
 @book_bp.route("/<int:book_id>/views", methods=["POST"])
 @jwt_required()
 def record_view(book_id):
