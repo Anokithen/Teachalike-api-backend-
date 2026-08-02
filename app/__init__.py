@@ -325,6 +325,8 @@ def _initialize_database_schema(app):
             _ensure_book_asset_owner_schema()
             stage = "book narration schema compatibility"
             _ensure_book_narration_schema()
+            stage = "mini-game generation schema compatibility"
+            _ensure_mini_game_generation_schema()
             stage = "schema verification"
             _verify_database_schema()
             app.logger.info(
@@ -547,6 +549,69 @@ def _ensure_book_narration_schema():
         changed = True
     if changed:
         db.session.commit()
+
+
+def _ensure_mini_game_generation_schema():
+    """Idempotently add generation lifecycle and server-grading columns."""
+    inspector = inspect(db.engine)
+    if inspector.has_table("mini_games"):
+        columns = {column["name"] for column in inspector.get_columns("mini_games")}
+        additions = {
+            "generation_status": "VARCHAR(20) NULL",
+            "generator_provider": "VARCHAR(50) NULL",
+            "generator_model": "VARCHAR(200) NULL",
+            "generator_version": "VARCHAR(50) NULL",
+            "source_content_hash": "VARCHAR(64) NULL",
+            "generated_at": "DATETIME NULL",
+            "generation_error": "VARCHAR(500) NULL",
+            "content_version": "INTEGER NULL",
+        }
+        for name, definition in additions.items():
+            if name not in columns:
+                db.session.execute(text(f"ALTER TABLE mini_games ADD COLUMN {name} {definition}"))
+        db.session.execute(text(
+            "UPDATE mini_games SET generation_status = 'fallback' "
+            "WHERE generation_status IS NULL"
+        ))
+        indexes = {index["name"] for index in inspect(db.engine).get_indexes("mini_games")}
+        mini_game_indexes = {
+            "ix_mini_games_book_id": "book_id",
+            "ix_mini_games_generation_status": "generation_status",
+            "ix_mini_games_source_content_hash": "source_content_hash",
+            "uq_mini_games_book_type_version": "book_id, game_type, content_version",
+        }
+        for name, columns_sql in mini_game_indexes.items():
+            if name not in indexes:
+                unique = "UNIQUE " if name.startswith("uq_") else ""
+                db.session.execute(text(
+                    f"CREATE {unique}INDEX {name} ON mini_games ({columns_sql})"
+                ))
+
+    inspector = inspect(db.engine)
+    if inspector.has_table("game_results"):
+        columns = {column["name"] for column in inspector.get_columns("game_results")}
+        additions = {
+            "correct_answers": "INTEGER NULL",
+            "total_questions": "INTEGER NULL",
+            "answers_data": "JSON NULL",
+            "game_content_version": "INTEGER NULL",
+            "points_awarded": "INTEGER NULL",
+        }
+        for name, definition in additions.items():
+            if name not in columns:
+                db.session.execute(text(f"ALTER TABLE game_results ADD COLUMN {name} {definition}"))
+        db.session.execute(text(
+            "UPDATE game_results SET points_awarded = score "
+            "WHERE points_awarded IS NULL"
+        ))
+        indexes = {index["name"] for index in inspect(db.engine).get_indexes("game_results")}
+        for name, column in {
+            "ix_game_results_child_id": "child_id",
+            "ix_game_results_game_id": "game_id",
+        }.items():
+            if name not in indexes:
+                db.session.execute(text(f"CREATE INDEX {name} ON game_results ({column})"))
+    db.session.commit()
 
 
 def _ensure_profile_image_schema():
