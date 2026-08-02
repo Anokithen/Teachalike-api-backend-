@@ -14,6 +14,7 @@ from app.models.teacher_application_model import TeacherApplication
 from app.models.teacher_profile_model import TeacherProfile
 from app.models.book_view_model import BookView
 from app.models.book_like_model import BookLike
+from app.models.pronunciation_attempt_model import PronunciationAttempt
 
 __all__ = [
     "Parent",
@@ -32,4 +33,5 @@ __all__ = [
     "TeacherProfile",
     "BookView",
     "BookLike",
+    "PronunciationAttempt",
 ]

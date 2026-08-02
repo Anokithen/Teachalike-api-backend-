@@ -19,6 +19,12 @@ class ReadingSession(db.Model):
     feedback_entries = db.relationship(
         "Feedback", backref="session", cascade="all, delete-orphan", lazy=True
     )
+    pronunciation_attempts = db.relationship(
+        "PronunciationAttempt",
+        backref="reading_session",
+        cascade="all, delete-orphan",
+        lazy=True,
+    )
 
     def to_dict(self):
         return {
