@@ -1,5 +1,67 @@
 # TeachAlike API
 
+## Automatic book mini-games
+
+The existing `MiniGame` system automatically prepares `quiz`, `word_puzzle`,
+and `spelling` records after either an admin or approved teacher saves a book
+with usable `text_content`. Gemini receives only saved book title, text, age
+group, and reading level. Story text is clearly delimited as untrusted data;
+child and account data is never sent. Generated JSON is schema-checked and all
+excerpts, quiz answers, puzzle words, and spelling words must be grounded in the
+saved book. Missing configuration, timeouts, malformed output, or provider
+failure produce a deterministic playable fallback and do not fail book saving.
+
+Generation is versioned with a SHA-256 fingerprint of title, text, age group,
+reading level, and generator version. An unchanged fingerprint is reused on
+GET; cover-only changes do not regenerate. Relevant edits mark the old rows
+`stale` and create a new content version, preserving historical `GameResult`
+links. Lifecycle values are `pending`, `generating`, `ready`, `fallback`,
+`failed`, and `stale`. The current bounded synchronous workflow commits
+`generating` before the Gemini call, so no database transaction remains open
+while waiting for the provider. Move the provider step to a durable queue if a
+future deployment needs multiple generation workers.
+
+Endpoints:
+
+- `GET /api/books/<book_id>/mini-games` lists the active standard games and
+  upgrades a legacy book once.
+- `GET /api/mini-games/<game_id>` returns child-safe content. Quiz answer keys,
+  explanations, source excerpts, provider metadata, and puzzle answers are not
+  exposed before grading. Spelling words are shown only for the existing
+  memorisation stage.
+- `POST /api/books/<book_id>/mini-games/regenerate` is rate-limited. Admins may
+  use it for every book; only an approved, unbanned owning teacher may use it
+  for their own book. Request book text and generator metadata are ignored.
+- `GET /api/books/<book_id>/mini-games/generation-status` returns a child-safe
+  status; safe provider diagnostics are included only for authorized managers.
+- `POST /api/mini-games/<game_id>/results` accepts `child_id`, `answers`, and
+  spelling `difficulty` where applicable. For quiz answers submit
+  `question_id`, `selected_option_index`, and `hint_used`. The server loads the
+  authoritative version, grades it, deducts five points for a correct hinted
+  answer, caps points, saves answer data and content version, and updates the
+  leaderboard. Client scores and answer keys are rejected.
+
+Gemini uses the existing server-only `GEMINI_API_KEY` (or compatible existing
+Google key), `GEMINI_MODEL`, and timeout configuration; no new environment
+variable is required. The book's dominant Unicode script is used for supported
+language guidance, with English as the documented uncertain-language fallback.
+
+For an existing MySQL/Railway database, back up the database and run:
+
+```bash
+mysql --host="$DB_HOST" --port="$DB_PORT" --user="$DB_USER" --password \
+  "$DB_NAME" < migrations/20260802_versioned_ai_mini_games.sql
+```
+
+The migration is idempotent and preserves existing games/results. Deploy the
+backend migration before the frontend. Railway must provide the same Gemini
+configuration already used by the application; provider failure remains safe.
+Run backend verification with:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
 ## Teacher registration and approval
 
 `POST /api/auth/register` remains backward-compatible with the existing JSON
