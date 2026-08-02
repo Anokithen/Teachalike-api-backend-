@@ -342,6 +342,12 @@ class Config:
     REGISTER_RATE_LIMIT_WINDOW_SECONDS = int(
         _env_value("REGISTER_RATE_LIMIT_WINDOW_SECONDS", default="3600")
     )
+    PRONUNCIATION_RATE_LIMIT_ATTEMPTS = int(
+        _env_value("PRONUNCIATION_RATE_LIMIT_ATTEMPTS", default="60")
+    )
+    PRONUNCIATION_RATE_LIMIT_WINDOW_SECONDS = int(
+        _env_value("PRONUNCIATION_RATE_LIMIT_WINDOW_SECONDS", default="3600")
+    )
     PIN_RATE_LIMIT_ATTEMPTS = int(
         _env_value("PIN_RATE_LIMIT_ATTEMPTS", default="5")
     )
