@@ -18,7 +18,7 @@ from app.models.teacher_application_model import (
     VALID_APPROVAL_STATUSES,
 )
 from app.utils import utc_now
-from app.services.book_games import create_default_mini_games
+from app.services.book_games import create_default_mini_games, ensure_book_games
 from app.services.account_cleanup_service import (
     collect_account_asset_refs,
     remove_account_asset_ledger_rows,
@@ -254,10 +254,18 @@ def create_book():
         ensure_book_asset_root(book)
         create_default_mini_games(book)
         db.session.commit()
+        try:
+            games, _changed = ensure_book_games(book.id, config=current_app.config)
+        except Exception:
+            db.session.rollback()
+            current_app.logger.exception(
+                "Automatic mini-game generation failed safely for book_id=%s", book.id
+            )
+            games = book.mini_games
         return jsonify({
             "message": "Book created with word puzzle, spelling, and quiz games.",
             "book": book.to_dict(include_content=True),
-            "mini_games": [game.to_dict(include_content=True) for game in book.mini_games],
+            "mini_games": [game.to_dict() for game in games],
         }), 201
     except Exception:
         db.session.rollback()
@@ -283,6 +291,13 @@ def update_book(book_id):
         for field, value in values.items():
             setattr(book, field, value)
         db.session.commit()
+        try:
+            ensure_book_games(book.id, config=current_app.config)
+        except Exception:
+            db.session.rollback()
+            current_app.logger.exception(
+                "Updated book mini-game generation failed safely for book_id=%s", book.id
+            )
         return jsonify({
             "message": "Book updated successfully.",
             "book": book.to_dict(include_content=True),

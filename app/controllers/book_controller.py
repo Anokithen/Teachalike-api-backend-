@@ -1,4 +1,4 @@
-from flask import jsonify, request
+from flask import current_app, jsonify, request
 from flask_jwt_extended import current_user
 from sqlalchemy import case, func
 from sqlalchemy.exc import IntegrityError
@@ -6,6 +6,7 @@ from sqlalchemy.exc import IntegrityError
 from app.extensions import db
 from app.models.book_model import Book
 from app.models.book_like_model import BookLike
+from app.services.book_games import ensure_book_games
 from app.models.book_view_model import BookView
 from app.models.child_model import Child
 from app.models.reading_session_model import ReadingSession
@@ -32,6 +33,15 @@ def get_book(book_id):
     book = db.session.get(Book, book_id)
     if not book:
         return jsonify({"error": "Book not found."}), 404
+    # Opening a legacy book prepares its standard games once. A matching
+    # ready/fallback/failed fingerprint is reused on every later open.
+    try:
+        ensure_book_games(book.id, config=current_app.config)
+    except Exception:
+        db.session.rollback()
+        current_app.logger.exception(
+            "Legacy mini-game preparation failed safely for book_id=%s", book.id
+        )
     return jsonify({"book": book.to_dict(include_content=True)}), 200
 
 

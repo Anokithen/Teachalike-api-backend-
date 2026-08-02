@@ -23,7 +23,7 @@ from app.models.book_model import Book
 from app.models.book_view_model import BookView
 from app.models.reading_session_model import ReadingSession
 from app.security import book_creation_attempts
-from app.services.book_games import create_default_mini_games
+from app.services.book_games import create_default_mini_games, ensure_book_games
 from app.services.book_management_service import (
     asset_reference,
     cleanup_references,
@@ -170,6 +170,13 @@ def create_book():
             )
             uploaded.append(metadata)
         db.session.commit()
+        try:
+            ensure_book_games(book.id, config=current_app.config)
+        except Exception:
+            db.session.rollback()
+            current_app.logger.exception(
+                "Teacher book mini-game generation failed safely for book_id=%s", book.id
+            )
         return jsonify({
             "message": "Book created successfully.",
             "book": book.to_dict(include_content=True),
@@ -358,6 +365,13 @@ def update_book(book_id):
                 uploaded.append(metadata)
         db.session.commit()
         cleanup_references(old_refs)
+        try:
+            ensure_book_games(book.id, config=current_app.config)
+        except Exception:
+            db.session.rollback()
+            current_app.logger.exception(
+                "Updated teacher book mini-game generation failed safely for book_id=%s", book.id
+            )
         return jsonify({"message": "Book updated successfully.", "book": book.to_dict(True)}), 200
     except (SQLAlchemyError, CloudinaryServiceError):
         db.session.rollback()
