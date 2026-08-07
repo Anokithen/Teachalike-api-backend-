@@ -10,6 +10,7 @@ from sqlalchemy import inspect, text
 from app.config import Config
 from app.extensions import db, jwt
 from app.routes import register_blueprints
+from app.services.email_service import validate_mail_config
 
 
 TEACHER_APPLICATION_REQUIRED_COLUMNS = frozenset({
@@ -23,6 +24,7 @@ TEACHER_APPLICATION_REQUIRED_COLUMNS = frozenset({
     "approval_status",
     "reviewed_by_id",
     "reviewed_at",
+    "approval_version",
     "rejection_reason",
     "created_at",
     "updated_at",
@@ -43,6 +45,7 @@ TEACHER_APPLICATION_COLUMN_DEFINITIONS = {
     "approval_status": "VARCHAR(20) NULL DEFAULT 'pending'",
     "reviewed_by_id": "INTEGER NULL",
     "reviewed_at": "DATETIME NULL",
+    "approval_version": "INTEGER NULL DEFAULT 0",
     "rejection_reason": "VARCHAR(1000) NULL",
     "created_at": "DATETIME NULL",
     "updated_at": "DATETIME NULL",
@@ -298,6 +301,14 @@ def _validate_deployment_config(app):
         raise RuntimeError(
             "FRONTEND_ORIGINS must be set to the deployed frontend origin."
         )
+    frontend_url = (app.config.get("FRONTEND_URL") or (app.config.get("FRONTEND_ORIGINS") or [""])[0]).rstrip("/")
+    if not frontend_url.startswith("https://"):
+        raise RuntimeError("FRONTEND_URL must use HTTPS in production.")
+    validate_mail_config(app.config)
+    if app.config.get("MAIL_TRANSPORT", "disabled") != "disabled" and not app.config.get("MAIL_FROM_EMAIL"):
+        raise RuntimeError("MAIL_FROM_EMAIL is required when transactional email is enabled.")
+    if not app.config.get("GOOGLE_AUTH_CLIENT_ID"):
+        app.logger.warning("GOOGLE_AUTH_CLIENT_ID is not configured; Google auth endpoint will reject login attempts.")
 
 
 def _initialize_database_schema(app):
@@ -317,6 +328,8 @@ def _initialize_database_schema(app):
             _ensure_voice_profile_schema()
             stage = "profile image schema compatibility"
             _ensure_profile_image_schema()
+            stage = "authentication and email schema compatibility"
+            _ensure_auth_email_schema()
             stage = "teacher application compatibility and backfill"
             _ensure_teacher_application_schema()
             stage = "book schema compatibility"
@@ -378,6 +391,11 @@ def _verify_database_schema():
             "teacher_applications is missing required columns: "
             + ", ".join(missing_application_columns)
         )
+    parent_columns = {column["name"] for column in inspector.get_columns("parents")}
+    required_parent_columns = {"email_verified", "email_verified_at", "auth_provider", "google_subject", "last_login_at"}
+    missing_parent_columns = sorted(required_parent_columns - parent_columns)
+    if missing_parent_columns:
+        raise RuntimeError("parents is missing required auth columns: " + ", ".join(missing_parent_columns))
 
 
 def _database_error_code(err):
@@ -628,6 +646,48 @@ def _ensure_profile_image_schema():
     db.session.commit()
 
 
+def _ensure_auth_email_schema():
+    """Add Google/email-verification storage and mark legacy accounts verified.
+
+    Legacy policy: every account that existed before these columns were added is
+    trusted as verified. New password registrations explicitly set
+    email_verified=false in the registration controller.
+    """
+    inspector = inspect(db.engine)
+    if inspector.has_table("parents"):
+        columns = {column["name"] for column in inspector.get_columns("parents")}
+        additions = {
+            "email_verified": "BOOLEAN NULL",
+            "email_verified_at": "DATETIME NULL",
+            "auth_provider": "VARCHAR(30) NULL",
+            "google_subject": "VARCHAR(255) NULL",
+            "last_login_at": "DATETIME NULL",
+        }
+        for name, definition in additions.items():
+            if name not in columns:
+                db.session.execute(text(f"ALTER TABLE parents ADD COLUMN {name} {definition}"))
+        db.session.execute(text("UPDATE parents SET email_verified = 1 WHERE email_verified IS NULL"))
+        db.session.execute(text("UPDATE parents SET email_verified_at = created_at WHERE email_verified = 1 AND email_verified_at IS NULL"))
+        db.session.execute(text("UPDATE parents SET auth_provider = 'password' WHERE auth_provider IS NULL"))
+        if db.engine.dialect.name == "mysql":
+            db.session.execute(text(
+                "ALTER TABLE parents "
+                "MODIFY COLUMN email_verified BOOLEAN NOT NULL DEFAULT 1, "
+                "MODIFY COLUMN auth_provider VARCHAR(30) NOT NULL DEFAULT 'password'"
+            ))
+        indexes = {index["name"] for index in inspect(db.engine).get_indexes("parents")}
+        if "uq_parents_google_subject" not in indexes:
+            db.session.execute(text("CREATE UNIQUE INDEX uq_parents_google_subject ON parents (google_subject)"))
+
+    from app.models.auth_identity_model import AccountIdentity
+    from app.models.email_verification_token_model import EmailVerificationToken
+    from app.models.email_delivery_model import EmailDelivery
+    AccountIdentity.__table__.create(bind=db.engine, checkfirst=True)
+    EmailVerificationToken.__table__.create(bind=db.engine, checkfirst=True)
+    EmailDelivery.__table__.create(bind=db.engine, checkfirst=True)
+    db.session.commit()
+
+
 def _prepare_teacher_application_table():
     """Rename and preserve the former teacher_profiles table before create_all."""
     inspector = inspect(db.engine)
@@ -709,6 +769,10 @@ def _ensure_teacher_application_schema():
     db.session.execute(text(
         "UPDATE teacher_applications SET updated_at = CURRENT_TIMESTAMP "
         "WHERE updated_at IS NULL"
+    ))
+    db.session.execute(text(
+        "UPDATE teacher_applications SET approval_version = 0 "
+        "WHERE approval_version IS NULL"
     ))
 
     null_account_count = db.session.execute(text(
@@ -795,8 +859,8 @@ def _ensure_teacher_application_schema():
     db.session.execute(
         text(
             "INSERT INTO teacher_applications "
-            "(account_id, approval_status, created_at, updated_at) "
-            "SELECT p.id, 'approved', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP "
+            "(account_id, approval_status, approval_version, created_at, updated_at) "
+            "SELECT p.id, 'approved', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP "
             "FROM parents p LEFT JOIN teacher_applications ta ON ta.account_id = p.id "
             "WHERE p.role = 'teacher' AND ta.account_id IS NULL"
         )

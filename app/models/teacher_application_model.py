@@ -48,6 +48,7 @@ class TeacherApplication(db.Model):
         nullable=True,
     )
     reviewed_at = db.Column(db.DateTime, nullable=True)
+    approval_version = db.Column(db.Integer, nullable=False, default=0, server_default="0")
     rejection_reason = db.Column(db.String(1000), nullable=True)
     created_at = db.Column(db.DateTime, nullable=False, default=utc_now)
     updated_at = db.Column(
@@ -75,6 +76,7 @@ class TeacherApplication(db.Model):
             "approval_status": self.approval_status,
             "reviewed_by_id": self.reviewed_by_id,
             "reviewed_at": utc_isoformat(self.reviewed_at),
+            "approval_version": self.approval_version,
             "rejection_reason": self.rejection_reason,
             "created_at": utc_isoformat(self.created_at),
             "updated_at": utc_isoformat(self.updated_at),

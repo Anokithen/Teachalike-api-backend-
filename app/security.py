@@ -62,6 +62,9 @@ def anonymized_key(prefix, value):
 
 registration_attempts = AttemptLimiter()
 login_attempts = AttemptLimiter()
+google_login_attempts = AttemptLimiter()
+verify_email_attempts = AttemptLimiter()
+resend_verification_attempts = AttemptLimiter()
 pin_attempts = AttemptLimiter()
 account_password_attempts = AttemptLimiter()
 book_creation_attempts = AttemptLimiter()

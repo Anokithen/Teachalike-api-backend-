@@ -14,6 +14,21 @@ def login():
     return ctrl.login()
 
 
+@auth_bp.route("/google", methods=["POST"])
+def google_auth():
+    return ctrl.google_auth()
+
+
+@auth_bp.route("/verify-email", methods=["POST"])
+def verify_email():
+    return ctrl.verify_email()
+
+
+@auth_bp.route("/resend-verification", methods=["POST"])
+def resend_verification():
+    return ctrl.resend_verification()
+
+
 @auth_bp.route("/refresh", methods=["POST"])
 def refresh():
     return ctrl.refresh()

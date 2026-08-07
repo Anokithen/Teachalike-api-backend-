@@ -141,40 +141,26 @@ class TeacherApprovalAndEngagementTests(unittest.TestCase):
         self.assertEqual(admin_response.status_code, 400, admin_response.json)
         self.assertIsNone(Parent.query.filter_by(email="no.admin@example.com").first())
 
-    def test_teacher_registration_requires_fields_and_valid_image(self):
+    def test_public_teacher_registration_is_rejected(self):
         missing = self._post("/api/auth/register", data={
             "account_type": "teacher", "name": "Teacher",
             "email": "missing@example.com", "password": "SecurePass123!",
         }, content_type="multipart/form-data")
         self.assertEqual(missing.status_code, 400, missing.json)
-        self.assertIn("phone_number is required.", missing.json["errors"])
-        self.assertIn("professional_photo is required.", missing.json["errors"])
-
-        spoofed = self._post("/api/auth/register", data=self._teacher_form(
-            professional_photo=(io.BytesIO(b"not an image"), "teacher.png", "image/png")
-        ), content_type="multipart/form-data")
-        self.assertEqual(spoofed.status_code, 415, spoofed.json)
-
-        oversized = self._post("/api/auth/register", data=self._teacher_form(
-            professional_photo=(io.BytesIO(PNG + b"x" * (1024 * 1024)), "teacher.png", "image/png")
-        ), content_type="multipart/form-data")
-        self.assertEqual(oversized.status_code, 413, oversized.json)
+        self.assertIn("Public registration only creates parent accounts.", missing.json["errors"])
+        self.assertIsNone(Parent.query.filter_by(email="missing@example.com").first())
 
     @patch("app.controllers.auth_controller.upload_asset")
-    def test_successful_teacher_application_is_pending_with_asset_ledger(self, upload_asset):
+    def test_public_teacher_application_does_not_create_account_or_asset(self, upload_asset):
         upload_asset.return_value = self._cloudinary_metadata()
         response = self._post("/api/auth/register", data=self._teacher_form(), content_type="multipart/form-data")
-        self.assertEqual(response.status_code, 202, response.json)
-        teacher = Parent.query.filter_by(email="public.teacher@example.com").one()
-        self.assertEqual(teacher.role, ROLE_TEACHER)
-        self.assertFalse(teacher.is_banned)
-        self.assertEqual(teacher.teacher_application.approval_status, APPROVAL_PENDING)
-        self.assertEqual(teacher.profile_image_url, "https://res.cloudinary.test/profile.png")
-        self.assertEqual(Asset.query.filter_by(owner_user_id=teacher.id, asset_category=USER_PROFILE_IMAGE).count(), 1)
+        self.assertEqual(response.status_code, 400, response.json)
+        self.assertIsNone(Parent.query.filter_by(email="public.teacher@example.com").first())
+        upload_asset.assert_not_called()
 
     @patch("app.controllers.auth_controller.delete_asset")
     @patch("app.controllers.auth_controller.upload_asset")
-    def test_teacher_registration_database_failure_rolls_back_and_cleans_upload(self, upload_asset, delete_asset):
+    def test_rejected_public_teacher_registration_never_uploads(self, upload_asset, delete_asset):
         upload_asset.return_value = self._cloudinary_metadata()
         with patch.object(db.session, "commit", side_effect=SQLAlchemyError("metadata failure")):
             response = self._post(
@@ -182,11 +168,10 @@ class TeacherApprovalAndEngagementTests(unittest.TestCase):
                 data=self._teacher_form(email="cleanup.teacher@example.com"),
                 content_type="multipart/form-data",
             )
-        self.assertEqual(response.status_code, 500, response.json)
+        self.assertEqual(response.status_code, 400, response.json)
         self.assertIsNone(Parent.query.filter_by(email="cleanup.teacher@example.com").first())
-        delete_asset.assert_called_once_with(
-            "teachalike/99/Image/Profile/profile", "image", "upload"
-        )
+        upload_asset.assert_not_called()
+        delete_asset.assert_not_called()
 
     def test_pending_rejected_and_approved_login_rules(self):
         pending = self._account("Pending", "pending.login@example.com", ROLE_TEACHER)

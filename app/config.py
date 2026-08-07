@@ -214,6 +214,36 @@ class Config:
         for origin in _frontend_origin_values
         if origin.strip()
     ] or ["*"]
+    FRONTEND_URL = _env_value(
+        "FRONTEND_URL",
+        default=(FRONTEND_ORIGINS[0] if FRONTEND_ORIGINS and FRONTEND_ORIGINS[0] != "*" else "http://localhost:3000"),
+    ).rstrip("/")
+    GOOGLE_AUTH_CLIENT_ID = _env_value("GOOGLE_AUTH_CLIENT_ID")
+    EMAIL_VERIFICATION_EXPIRES_MINUTES = _positive_int_env("EMAIL_VERIFICATION_EXPIRES_MINUTES", 30)
+    EMAIL_VERIFICATION_DELTA = timedelta(minutes=EMAIL_VERIFICATION_EXPIRES_MINUTES)
+    RESEND_VERIFICATION_COOLDOWN_SECONDS = _positive_int_env("RESEND_VERIFICATION_COOLDOWN_SECONDS", 60)
+    RESEND_VERIFICATION_RATE_LIMIT_ATTEMPTS = _positive_int_env("RESEND_VERIFICATION_RATE_LIMIT_ATTEMPTS", 5)
+    RESEND_VERIFICATION_RATE_LIMIT_WINDOW_SECONDS = _positive_int_env("RESEND_VERIFICATION_RATE_LIMIT_WINDOW_SECONDS", 3600)
+    VERIFY_EMAIL_RATE_LIMIT_ATTEMPTS = _positive_int_env("VERIFY_EMAIL_RATE_LIMIT_ATTEMPTS", 20)
+    VERIFY_EMAIL_RATE_LIMIT_WINDOW_SECONDS = _positive_int_env("VERIFY_EMAIL_RATE_LIMIT_WINDOW_SECONDS", 3600)
+    GOOGLE_LOGIN_RATE_LIMIT_ATTEMPTS = _positive_int_env("GOOGLE_LOGIN_RATE_LIMIT_ATTEMPTS", 20)
+    GOOGLE_LOGIN_RATE_LIMIT_WINDOW_SECONDS = _positive_int_env("GOOGLE_LOGIN_RATE_LIMIT_WINDOW_SECONDS", 900)
+
+    MAIL_TRANSPORT = _env_value("MAIL_TRANSPORT", default="disabled").lower()
+    MAIL_FROM_NAME = _env_value("MAIL_FROM_NAME", default="TeachAlike")
+    MAIL_FROM_EMAIL = _env_value("MAIL_FROM_EMAIL")
+    MAIL_REPLY_TO = _env_value("MAIL_REPLY_TO")
+    MAIL_CONNECT_TIMEOUT_SECONDS = _positive_int_env("MAIL_CONNECT_TIMEOUT_SECONDS", 10)
+    MAIL_SEND_TIMEOUT_SECONDS = _positive_int_env("MAIL_SEND_TIMEOUT_SECONDS", 20)
+    MAIL_MAX_ATTEMPTS = _positive_int_env("MAIL_MAX_ATTEMPTS", 5)
+    MAIL_RETRY_DELTA_FACTORY = staticmethod(lambda seconds: timedelta(seconds=seconds))
+    GMAIL_CLIENT_ID = _env_value("GMAIL_CLIENT_ID")
+    GMAIL_CLIENT_SECRET = _env_value("GMAIL_CLIENT_SECRET")
+    GMAIL_REFRESH_TOKEN = _env_value("GMAIL_REFRESH_TOKEN")
+    GMAIL_SMTP_USERNAME = _env_value("GMAIL_SMTP_USERNAME")
+    GMAIL_SMTP_APP_PASSWORD = _env_value("GMAIL_SMTP_APP_PASSWORD")
+    GMAIL_SMTP_HOST = _env_value("GMAIL_SMTP_HOST", default="smtp.gmail.com")
+    GMAIL_SMTP_PORT = _env_value("GMAIL_SMTP_PORT", default="587")
     TRUST_PROXY_HOPS = int(
         _env_value(
             "TRUST_PROXY_HOPS",

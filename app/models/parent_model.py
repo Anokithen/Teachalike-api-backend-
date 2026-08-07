@@ -20,6 +20,11 @@ class Parent(db.Model):
     password = db.Column(db.String(255), nullable=False)
     role = db.Column(db.String(20), nullable=False, default=ROLE_PARENT)
     is_banned = db.Column(db.Boolean, nullable=False, default=False)
+    email_verified = db.Column(db.Boolean, nullable=False, default=True, server_default=db.text("1"))
+    email_verified_at = db.Column(db.DateTime, nullable=True)
+    auth_provider = db.Column(db.String(30), nullable=False, default="password", server_default="password")
+    google_subject = db.Column(db.String(255), nullable=True, unique=True)
+    last_login_at = db.Column(db.DateTime, nullable=True)
     profile_image_url = db.Column(db.String(500), nullable=True)
     profile_image_public_id = db.Column(db.String(255), nullable=True)
     created_at = db.Column(db.DateTime, default=utc_now)
@@ -50,6 +55,9 @@ class Parent(db.Model):
         "Book",
         foreign_keys="Book.created_by_account_id",
         back_populates="creator",
+    )
+    identities = db.relationship(
+        "AccountIdentity", back_populates="account", cascade="all, delete-orphan", lazy=True
     )
 
     def set_password(self, password):
@@ -86,6 +94,10 @@ class Parent(db.Model):
             "email": self.email,
             "role": self.role,
             "is_banned": self.is_banned,
+            "email_verified": self.email_verified,
+            "email_verified_at": utc_isoformat(self.email_verified_at),
+            "auth_provider": self.auth_provider,
+            "last_login_at": utc_isoformat(self.last_login_at),
             "profile_image_url": self.profile_image_url,
             "created_at": utc_isoformat(self.created_at),
         }

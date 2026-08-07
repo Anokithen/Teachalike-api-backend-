@@ -1,5 +1,77 @@
 # TeachAlike API
 
+## Google authentication, email verification, and approval email
+
+Public `POST /api/auth/register` now creates parent password accounts only.
+New password accounts are saved with `email_verified=false`, receive a hashed,
+single-use verification token, and cannot receive JWTs until
+`POST /api/auth/verify-email` succeeds. Existing accounts are treated as
+trusted legacy accounts during migration: they are marked verified, while roles,
+password hashes, teacher approval status, books, narration, mini-games, and
+children remain unchanged.
+
+New/updated auth endpoints:
+
+- `POST /api/auth/register` returns `requires_email_verification=true` and no tokens.
+- `POST /api/auth/login` blocks unverified, banned, pending, or rejected accounts.
+- `POST /api/auth/google` verifies a Google Identity Services ID token in Flask,
+  links by Google `sub`, and never changes an existing role.
+- `POST /api/auth/verify-email` verifies by raw token only; account id/email are ignored.
+- `POST /api/auth/resend-verification` returns a generic response and rate-limits by IP/email.
+- `POST /api/auth/refresh` repeats ban, email-verification, and teacher-approval checks.
+
+Teacher approval uses the existing `teacher_applications` table. Approval from
+non-approved to `approved` increments `approval_version`, creates one
+`EmailDelivery` outbox event with key `teacher_approval:<teacher_id>:<version>`,
+commits the approval, then attempts email delivery. Gmail outage does not roll
+back the approval. Re-approving an already-approved teacher is idempotent and
+does not create another email. If a teacher is later rejected and approved
+again, the incremented approval version intentionally creates a new approval
+event.
+
+Run the MySQL migration before deploying the updated app:
+
+```bash
+mysql --host="$DB_HOST" --port="$DB_PORT" --user="$DB_USER" --password \
+  "$DB_NAME" < migrations/20260807_google_email_auth.sql
+```
+
+Required Railway/backend variables:
+
+- `FRONTEND_URL` and `FRONTEND_ORIGINS` set to the deployed frontend origin
+  (`https://...` in production).
+- `GOOGLE_AUTH_CLIENT_ID` from a Google Cloud OAuth Web client.
+- `MAIL_TRANSPORT=gmail_api` with `MAIL_FROM_EMAIL`,
+  `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, and `GMAIL_REFRESH_TOKEN`; use only
+  the Gmail send scope: `https://www.googleapis.com/auth/gmail.send`.
+- Or `MAIL_TRANSPORT=gmail_smtp` with `GMAIL_SMTP_USERNAME` and
+  `GMAIL_SMTP_APP_PASSWORD`. Never use a normal Gmail password.
+
+Google Cloud setup:
+
+1. Create an OAuth Web client.
+2. Add authorized JavaScript origins for localhost and production, for example
+   `http://localhost:3000` and `https://your-frontend.up.railway.app`.
+3. Set the same client ID as `GOOGLE_AUTH_CLIENT_ID` in Flask and
+   `NEXT_PUBLIC_GOOGLE_AUTH_CLIENT_ID` in Next.js.
+4. Invalid audience errors mean the frontend and backend client IDs differ.
+   Origin errors mean the current browser origin is missing from Google Cloud.
+
+Gmail setup:
+
+1. Enable the Gmail API for the Google Cloud project.
+2. Authorize only `gmail.send`.
+3. Store the refresh token server-side in Railway; rotate it by issuing a new
+   refresh token and replacing `GMAIL_REFRESH_TOKEN`.
+4. Provider failures are stored as safe categories such as
+   `TEMPORARY_PROVIDER_FAILURE`; raw provider responses and credentials are not logged.
+
+Testing:
+
+```bash
+.venv/bin/python -m unittest discover -s tests -v
+```
+
 ## Automatic book mini-games
 
 The existing `MiniGame` system automatically prepares `quiz`, `word_puzzle`,

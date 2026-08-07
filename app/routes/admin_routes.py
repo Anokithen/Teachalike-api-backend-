@@ -76,6 +76,12 @@ def reject_teacher(teacher_id):
     return ctrl.reject_teacher(teacher_id)
 
 
+@admin_bp.route("/teachers/<int:teacher_id>/approval-email/retry", methods=["POST"])
+@admin_required
+def retry_teacher_approval_email(teacher_id):
+    return ctrl.retry_teacher_approval_email(teacher_id)
+
+
 @admin_bp.route("/teachers/<int:teacher_id>/ban", methods=["PATCH"])
 @admin_required
 def ban_teacher(teacher_id):

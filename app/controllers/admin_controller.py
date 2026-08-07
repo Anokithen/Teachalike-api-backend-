@@ -17,6 +17,12 @@ from app.models.teacher_application_model import (
     VALID_TEACHER_TYPES,
     VALID_APPROVAL_STATUSES,
 )
+from app.models.email_delivery_model import (
+    EMAIL_STATUS_FAILED,
+    EMAIL_STATUS_PENDING,
+    EMAIL_TYPE_TEACHER_APPROVED,
+    EmailDelivery,
+)
 from app.utils import utc_now
 from app.services.book_games import create_default_mini_games, ensure_book_games
 from app.services.account_cleanup_service import (
@@ -46,6 +52,7 @@ from app.services.book_management_service import (
     BookAssetCleanupError,
     delete_book_with_registered_assets,
 )
+from app.services.email_service import send_delivery
 
 MAX_PHONE_LENGTH = 40
 MAX_ADDRESS_LENGTH = 500
@@ -415,6 +422,7 @@ def _teacher_admin_dict(account):
     else:
         data.update(
             approval_status=APPROVAL_APPROVED,
+            approval_version=0,
             phone_number=None,
             address=None,
             teacher_type=None,
@@ -424,6 +432,12 @@ def _teacher_admin_dict(account):
             reviewed_at=None,
             rejection_reason=None,
         )
+    event_prefix = f"teacher_approval:{account.id}:"
+    delivery = EmailDelivery.query.filter(
+        EmailDelivery.event_key.like(f"{event_prefix}%")
+    ).order_by(EmailDelivery.id.desc()).first()
+    data["approval_notification"] = delivery.to_dict() if delivery else None
+    data["approval_notification_status"] = delivery.status if delivery else None
     return data
 
 
@@ -476,11 +490,35 @@ def _review_teacher(teacher_id, approval_status):
         }), 200
 
     try:
+        was_approved = (not created_profile and profile.approval_status == APPROVAL_APPROVED)
         profile.approval_status = approval_status
         profile.reviewed_by_id = current_user.id
         profile.reviewed_at = utc_now()
         profile.rejection_reason = reason or None if approval_status == APPROVAL_REJECTED else None
+        delivery = None
+        if approval_status == APPROVAL_APPROVED and not was_approved:
+            profile.approval_version = (profile.approval_version or 0) + 1
+            db.session.flush()
+            event_key = f"teacher_approval:{account.id}:{profile.approval_version}"
+            delivery = EmailDelivery.query.filter_by(event_key=event_key).first()
+            if delivery is None:
+                delivery = EmailDelivery(
+                    recipient_account_id=account.id,
+                    recipient_email=account.email,
+                    email_type=EMAIL_TYPE_TEACHER_APPROVED,
+                    event_key=event_key,
+                    status=EMAIL_STATUS_PENDING,
+                    context_json={"teacher_id": account.id, "approval_version": profile.approval_version},
+                )
+                db.session.add(delivery)
         db.session.commit()
+        if delivery is not None:
+            try:
+                send_delivery(delivery)
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
+                current_app.logger.exception("Teacher approval notification send failed after approval commit.")
         return jsonify({
             "message": f"Teacher {approval_status} successfully.",
             "teacher": _teacher_admin_dict(account),
@@ -499,6 +537,37 @@ def approve_teacher(teacher_id):
 
 def reject_teacher(teacher_id):
     return _review_teacher(teacher_id, APPROVAL_REJECTED)
+
+
+def retry_teacher_approval_email(teacher_id):
+    account = db.session.get(Parent, teacher_id)
+    if not account or account.role != ROLE_TEACHER:
+        return jsonify({"error": "Teacher not found."}), 404
+    profile = account.teacher_application
+    if not profile or profile.approval_status != APPROVAL_APPROVED:
+        return jsonify({"error": "Teacher is not approved.", "code": "TEACHER_NOT_APPROVED", "error_code": "TEACHER_NOT_APPROVED"}), 400
+    event_key = f"teacher_approval:{account.id}:{profile.approval_version or 1}"
+    delivery = EmailDelivery.query.filter_by(event_key=event_key).first()
+    if delivery is None:
+        delivery = EmailDelivery(
+            recipient_account_id=account.id,
+            recipient_email=account.email,
+            email_type=EMAIL_TYPE_TEACHER_APPROVED,
+            event_key=event_key,
+            status=EMAIL_STATUS_PENDING,
+            context_json={"teacher_id": account.id, "approval_version": profile.approval_version or 1},
+        )
+        db.session.add(delivery)
+        db.session.commit()
+    if delivery.status != EMAIL_STATUS_FAILED:
+        return jsonify({"message": "Approval email is not failed.", "delivery": delivery.to_dict()}), 200
+    try:
+        send_delivery(delivery)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        current_app.logger.exception("Approval email retry failed.")
+    return jsonify({"message": "Approval email retry processed.", "delivery": delivery.to_dict()}), 200
 
 
 def book_analytics():
