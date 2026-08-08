@@ -112,6 +112,9 @@ def create_child():
         )
         if data.get("child_pin"):
             child.set_pin(str(data["child_pin"]))
+            child.child_access_version = (child.child_access_version or 1) + 1
+            from app.controllers.active_child_controller import revoke_child_sessions
+            revoke_child_sessions(child.id, "pin_changed")
         db.session.add(child)
         db.session.commit()
         return jsonify({"message": "Child profile created successfully.", "child": child.to_dict()}), 201
@@ -197,6 +200,9 @@ def delete_profile_image_for_child(child_id):
 
 
 def verify_child_pin(child_id):
+    if current_user.role == ROLE_PARENT:
+        from app.controllers.active_child_controller import activate_child
+        data = request.get_json(silent=True) or {}; data["child_id"] = child_id; return activate_child(data)
     child = db.session.get(Child, child_id)
     if not can_access_child(child):
         return jsonify({"error": "Child not found."}), 404
@@ -231,6 +237,8 @@ def delete_child(child_id):
         return jsonify({"error": "Child not found."}), 404
 
     try:
+        from app.controllers.active_child_controller import revoke_child_sessions
+        revoke_child_sessions(child.id, "child_deleted")
         if child.profile_image_public_id:
             from app.controllers.asset_controller import delete_child_profile_image_legacy
 

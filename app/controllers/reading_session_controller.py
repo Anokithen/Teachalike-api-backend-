@@ -1,7 +1,7 @@
 import re
 import math
 
-from flask import current_app, jsonify, request
+from flask import current_app, g, jsonify, request
 from flask_jwt_extended import current_user
 
 from app.extensions import db
@@ -58,7 +58,7 @@ def _session_belongs_to_current_parent(session):
     if session is None:
         return False
     child = db.session.get(Child, session.child_id)
-    return child_belongs_to_current_parent(child)
+    return child is not None and (child.id == g.active_child.id if current_user.role == "parent" and getattr(g, "active_child", None) else child_belongs_to_current_parent(child))
 
 
 def _get_integer_id(model, value):
@@ -81,11 +81,13 @@ def create_reading_session():
     book_id = data.get("book_id")
     voice_profile_id = data.get("voice_profile_id")
 
-    child = _get_integer_id(Child, child_id)
-    if not child_id or not child_belongs_to_current_parent(child):
-        errors.append("A valid child_id belonging to this account is required.")
-    elif child:
-        child_id = child.id
+    if current_user.role == "parent":
+        if child_id is not None: return jsonify({"error":"Parent requests cannot override the active child.","error_code":"ACTIVE_CHILD_MISMATCH"}), 409
+        child = g.active_child; child_id = child.id
+    else:
+        child = _get_integer_id(Child, child_id)
+        if not child_id or not child_belongs_to_current_parent(child): errors.append("A valid child_id belonging to this account is required.")
+        elif child: child_id = child.id
 
     book = _get_integer_id(Book, book_id)
     if not book_id or not book:

@@ -12,6 +12,7 @@ from app.routes.book_narration_routes import book_narration_bp
 from app.routes.ai_routes import ai_bp
 from app.routes.asset_routes import asset_bp
 from app.routes.teacher_book_routes import teacher_book_bp
+from app.routes.active_child_routes import bp as active_child_bp
 
 
 def register_blueprints(app):
@@ -29,3 +30,4 @@ def register_blueprints(app):
     app.register_blueprint(ai_bp)
     app.register_blueprint(asset_bp)
     app.register_blueprint(teacher_book_bp)
+    app.register_blueprint(active_child_bp)

@@ -1,6 +1,11 @@
 from functools import wraps
 
-from flask import jsonify
+from flask import g, jsonify, request
+from hashlib import sha256
+from app.extensions import db
+from app.models.child_access_session_model import ChildAccessSession
+from app.models.child_model import Child
+from app.utils import utc_now
 from flask_jwt_extended import verify_jwt_in_request, current_user
 
 from app.models.parent_model import ROLE_ADMIN, ROLE_TEACHER, ROLE_PARENT
@@ -76,6 +81,27 @@ def approved_teacher_required(fn):
 
 def parent_or_teacher_required(fn):
     return role_required(ROLE_PARENT, ROLE_TEACHER)(fn)
+
+def active_child_required(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        verify_jwt_in_request()
+        if not current_user: return jsonify({"error":"Account not found."}), 404
+        if current_user.role != ROLE_PARENT: return fn(*args, **kwargs)
+        raw = request.headers.get("X-Child-Session", "")
+        if not raw or len(raw) > 256: return jsonify({"error":"Choose a child from the header before starting this activity.","error_code":"ACTIVE_CHILD_REQUIRED"}), 403
+        session = ChildAccessSession.query.filter_by(token_hash=sha256(raw.encode()).hexdigest()).first(); now = utc_now()
+        if not session or session.parent_id != current_user.id: return jsonify({"error":"Child session is not valid.","error_code":"ACTIVE_CHILD_SESSION_REVOKED"}), 403
+        if session.revoked_at: return jsonify({"error":"Child mode is locked.","error_code":"ACTIVE_CHILD_SESSION_REVOKED"}), 403
+        if session.expires_at <= now:
+            session.revoked_at = now; session.revoke_reason = "expired"; db.session.commit(); return jsonify({"error":"Child mode has expired.","error_code":"ACTIVE_CHILD_SESSION_EXPIRED"}), 403
+        child = db.session.get(Child, session.child_id)
+        if not child or child.parent_id != current_user.id: return jsonify({"error":"Active child is no longer available.","error_code":"ACTIVE_CHILD_MISMATCH"}), 403
+        if (child.child_access_version or 1) != session.child_access_version: return jsonify({"error":"Child session is no longer valid.","error_code":"ACTIVE_CHILD_SESSION_REVOKED"}), 403
+        if (now - session.last_used_at).total_seconds() > 300: session.last_used_at = now; db.session.commit()
+        g.active_child, g.child_access_session = child, session
+        return fn(*args, **kwargs)
+    return wrapper
 
 
 def get_current_parent():

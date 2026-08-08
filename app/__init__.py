@@ -78,7 +78,7 @@ def create_app(*, initialize_database=None):
     CORS(
         app,
         resources={r"/api/*": {"origins": app.config["FRONTEND_ORIGINS"]}},
-        allow_headers=["Authorization", "Content-Type"],
+        allow_headers=["Authorization", "Content-Type", "X-Child-Session"],
         methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     )
     db.init_app(app)

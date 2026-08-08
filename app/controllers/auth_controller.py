@@ -393,6 +393,8 @@ def logout():
 
     try:
         now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+        from app.models.child_access_session_model import ChildAccessSession
+        ChildAccessSession.query.filter_by(parent_id=int(get_jwt_identity()), revoked_at=None).update({"revoked_at": now_naive, "revoke_reason":"logout"}, synchronize_session=False)
         RevokedToken.query.filter(RevokedToken.expires_at < now_naive).delete(
             synchronize_session=False
         )

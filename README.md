@@ -539,3 +539,16 @@ When a user creates a voice profile, the API sends the private recording to Elev
 This code intentionally uses a one-worker in-process thread pool per Gunicorn process because the current deployment has no queue service. Jobs are lost when a web process restarts and are not coordinated across replicas. For production/scale, move `app.controllers.book_narration_controller._generate_narration` to a durable Celery or RQ worker backed by Redis, while retaining the same `BookNarration` status polling API.
 
 After changing API environment variables, restart the Flask process. Existing voice profiles without an ElevenLabs ID are cloned lazily the first time their owner requests a narration.
+# Global parent active-child mode
+
+Parents choose a child only in the authenticated global header. `POST /api/parent/active-child` accepts `{ "child_id": 14, "pin": "123456" }` and returns a short-lived opaque token once the existing six-digit `child_pin_hash` verifies. The frontend keeps that token only in tab-scoped `sessionStorage` and sends it as `X-Child-Session`; the parent JWT remains required for every request. `GET` restores the verified child and `DELETE` locks it.
+
+Parent reading and mini-game activity derives `child_id` from the verified session. Client child IDs are rejected for parent activity. Offline point-earning sync is disabled for parents (`OFFLINE_CHILD_CONTEXT_REQUIRED`) because an offline queue cannot prove its child context securely. Teachers and administrators retain their existing explicit management/reporting behavior.
+
+Apply the idempotent migration before deploying:
+
+```bash
+mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p "$DB_NAME" < migrations/20260808_global_active_child.sql
+```
+
+The session is revoked on lock, logout, child deletion, PIN change, expiry, or child access-version mismatch. Verify with `python3 -m unittest discover -s tests -v` after installing `requirements.txt`.

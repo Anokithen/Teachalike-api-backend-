@@ -15,6 +15,7 @@ from app.models.teacher_profile_model import TeacherProfile
 from app.models.book_view_model import BookView
 from app.models.book_like_model import BookLike
 from app.models.pronunciation_attempt_model import PronunciationAttempt
+from app.models.child_access_session_model import ChildAccessSession
 
 __all__ = [
     "Parent",
@@ -34,4 +35,5 @@ __all__ = [
     "BookView",
     "BookLike",
     "PronunciationAttempt",
+    "ChildAccessSession",
 ]

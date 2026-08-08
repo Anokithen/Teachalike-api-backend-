@@ -90,6 +90,8 @@ def sync_offline_activity():
     created earlier in the same batch, since it won't have a server-side id yet.
     """
     data = request.get_json(silent=True)
+    if current_user.role == "parent":
+        return jsonify({"error":"Offline point-earning synchronization is disabled for parents; connect to verify child mode before saving points.","error_code":"OFFLINE_CHILD_CONTEXT_REQUIRED"}), 409
     if not data:
         return jsonify({"error": "Request body is required."}), 400
 

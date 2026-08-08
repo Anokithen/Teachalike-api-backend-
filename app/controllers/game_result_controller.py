@@ -3,7 +3,8 @@
 from datetime import timedelta
 import unicodedata
 
-from flask import jsonify, request
+from flask import g, jsonify, request
+from flask_jwt_extended import current_user
 
 from app.extensions import db
 from app.utils import utc_now
@@ -174,7 +175,11 @@ def submit_game_result(game_id):
     data = request.get_json(silent=True)
     if not data:
         return jsonify({"error": "Request body is required."}), 400
-    child = _validated_child(data)
+    if current_user.role == "parent":
+        if "child_id" in data: return jsonify({"error":"Parent results cannot override the active child.","error_code":"ACTIVE_CHILD_MISMATCH"}), 409
+        if "score" in data: return jsonify({"error":"Scores are calculated by the server."}), 400
+        child = g.active_child
+    else: child = _validated_child(data)
     if child is None:
         return jsonify({"errors": ["A valid child_id belonging to this account is required."]}), 400
 
@@ -223,7 +228,7 @@ def submit_game_result(game_id):
         _award_leaderboard_points(child.id, score)
         db.session.commit()
         return jsonify({
-            "message": "Wonderful effort! Your story-game result is saved.",
+            "message": f"Great work! {score} points were added to {child.name}.",
             "game_result": result.to_dict(),
             "answers": grading["answers"],
         }), 201

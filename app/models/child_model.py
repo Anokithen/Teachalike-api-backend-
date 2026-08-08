@@ -15,6 +15,7 @@ class Child(db.Model):
     age = db.Column(db.Integer, nullable=False)
     gender = db.Column(db.String(30), nullable=False, default="prefer_not_to_say")
     child_pin_hash = db.Column(db.String(255), nullable=True)
+    child_access_version = db.Column(db.Integer, nullable=False, default=1, server_default="1")
     profile_image_url = db.Column(db.String(500), nullable=True)
     profile_image_public_id = db.Column(db.String(255), nullable=True)
     reading_level = db.Column(db.String(50), nullable=False, default="beginner")

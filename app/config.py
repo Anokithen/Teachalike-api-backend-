@@ -163,6 +163,7 @@ def _build_database_uri():
 
 
 class Config:
+    CHILD_ACCESS_SESSION_MINUTES = int(_env_value("CHILD_ACCESS_SESSION_MINUTES", default="30"))
     IS_RAILWAY = _is_railway_environment()
     MISSING_DATABASE_ENV_VARS = _missing_database_env_vars()
     DATABASE_IS_CONFIGURED = not MISSING_DATABASE_ENV_VARS
